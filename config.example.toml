@@ -1,0 +1,49 @@
+# Forestr configuration
+# Copy this file to the directory printed by:
+#   herdr plugin config-dir ludoroo.forestr
+# All values below are the defaults.
+
+# Popup size: a positive integer (terminal cells) or percentage.
+popup_width = "90%"
+popup_height = "85%"
+
+# Backend: "auto", "git", or "worktrunk". Auto prefers Worktrunk when `wt`
+# is executable and otherwise uses native Git.
+backend = "auto"
+
+# Candidate sources offered by the create wizard: "local", "remote", or "both".
+create_scope = "local"
+
+# Commit/ref used as the base for a newly typed branch. Empty asks the Git
+# backend to try origin/HEAD, main, master, then HEAD. Worktrunk applies its own
+# normal switch/create behavior.
+create_base = ""
+
+# Worktrunk-only display enrichment. GNU timeout is required only when this is
+# true and Worktrunk is selected. Concurrency accepts 1 or 2.
+enrich_backend = true
+worktrunk_enrichment_timeout_ms = 10000
+worktrunk_enrichment_collection_timeout_ms = 5000
+worktrunk_enrichment_concurrency = 2
+
+# Modal navigation and actions. Values may be one alphanumeric character, /,
+# ?, ., enter, esc, home, end, ctrl-a..ctrl-z, or alt-a..alt-z. Keys must be
+# unique; esc remains reserved for modal navigation.
+key_down = "j"
+key_up = "k"
+key_first = "g"
+key_last = "G"
+key_search = "/"
+key_open = "enter"
+key_create = "c"
+key_new = "n"
+key_back = "h"
+key_force_create = "C"
+key_remove = "d"
+key_force_remove = "D"
+key_local = "l"
+key_remote = "r"
+key_both = "b"
+key_refresh = "ctrl-r"
+key_quit = "q"
+key_normal = "esc"

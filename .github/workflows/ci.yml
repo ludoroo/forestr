@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - name: Install Linux runtime requirements
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes bash git jq curl util-linux coreutils python3 ca-certificates procps
+
+      - name: Install Herdr 0.9+
+        env:
+          HERDR_VERSION: 0.9.1
+          HERDR_SHA256: 2a02fed16beb651ef006e1d43f048f652ca4dc58ad053cd2d44450563d5c54b7
+        run: |
+          download=$(mktemp)
+          trap 'rm -f "$download"' EXIT
+          curl --fail --location --silent --show-error \
+            --output "$download" \
+            "https://github.com/herdrdev/herdr/releases/download/v${HERDR_VERSION}/herdr-linux-x86_64"
+          printf '%s  %s\n' "$HERDR_SHA256" "$download" | sha256sum --check --status
+          sudo install -m 0755 "$download" /usr/local/bin/herdr
+          version=$(herdr --version | awk '{print $2}')
+          test "$(printf '%s\n' 0.9 "$version" | sort -V | head -n1)" = 0.9
+
+      - name: Install fzf 0.74 with required features
+        env:
+          FZF_VERSION: 0.74.3
+          FZF_SHA256: 3501a595e4b5c40a6b047340a0e8f805c46fd4e61ef95ef8a136ba8c61cf6f22
+        run: |
+          download=$(mktemp)
+          extract_dir=$(mktemp -d)
+          trap 'rm -f "$download"; rm -rf "$extract_dir"' EXIT
+          curl --fail --location --silent --show-error \
+            --output "$download" \
+            "https://github.com/junegunn/fzf/releases/download/v${FZF_VERSION}/fzf-${FZF_VERSION}-linux_amd64.tar.gz"
+          printf '%s  %s\n' "$FZF_SHA256" "$download" | sha256sum --check --status
+          tar --extract --gzip --file "$download" --directory "$extract_dir" fzf
+          sudo install -m 0755 "$extract_dir/fzf" /usr/local/bin/fzf
+          version=$(fzf --version | awk '{print $1}')
+          test "$(printf '%s\n' 0.74 "$version" | sort -V | head -n1)" = 0.74
+          fzf --help | grep -q -- '--track'
+          fzf --help | grep -q -- '--id-nth'
+          fzf --help | grep -q -- '--listen-unsafe'
+          fzf --help | grep -q -- '--input-border'
+          fzf --help | grep -q -- '--footer-border'
+          printf 'row\n' | fzf --filter=row --bind='start:transform:echo noop' >/dev/null
+
+      - name: Verify curl and timeout capabilities
+        run: |
+          curl --help all | grep -q -- '--unix-socket'
+          timeout --help | grep -q -- '--kill-after'
+          command -v setsid
+
+      - name: Run repository checks
+        run: ./test.sh
+
+      - name: Check for orphaned refresh producers
+        if: always()
+        run: |
+          if pgrep -af '[m]anager.sh __produce'; then
+            echo 'orphan manager.sh __produce process found' >&2
+            exit 1
+          fi

@@ -1,0 +1,18 @@
+id = "ludoroo.forestr"
+name = "Forestr"
+version = "0.1.0"
+min_herdr_version = "0.9.0"
+description = "Manage branch worktrees in a modal Herdr popup."
+platforms = ["linux"]
+
+[[actions]]
+id = "open"
+title = "Forestr"
+contexts = ["workspace"]
+command = ["bash", "-c", "exec bash \"$HERDR_PLUGIN_ROOT/src/open.sh\" manager config"]
+
+[[panes]]
+id = "manager"
+title = "Forestr"
+placement = "popup"
+command = ["bash", "-c", "exec bash \"$HERDR_PLUGIN_ROOT/src/manager.sh\""]
