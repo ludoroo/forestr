@@ -5,11 +5,14 @@ set -euo pipefail
 repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 plugin_root="$repo_root/src"
 tmp=$(mktemp -d)
+tmp=$(cd "$tmp" && pwd -P)
 trap 'rm -rf "$tmp"' EXIT
 
 repo="$tmp/repo"
 non_repo="$tmp/non-repo"
 git_bin=/usr/bin/git
+[[ -x $git_bin ]] || git_bin=$(command -v git)
+jq_bin=$(command -v jq)
 export GIT_CONFIG_COUNT=1
 export GIT_CONFIG_KEY_0=core.fsmonitor
 export GIT_CONFIG_VALUE_0=false
@@ -36,7 +39,8 @@ export HERDR_BIN_PATH="$tmp/herdr"
 export WORKTRUNK_BIN=/bin/true
 export FZF_BIN=/bin/true
 export GIT_BIN="$git_bin"
-export JQ_BIN=/usr/bin/jq
+export JQ_BIN="$jq_bin"
+export FORESTR_BASH_BIN="$BASH"
 
 bash "$plugin_root/open.sh"
 
@@ -47,7 +51,8 @@ grep -Fxq -- "$repo" <<<"$joined"
 grep -Fxq -- '--placement' <<<"$joined"
 grep -Fxq -- 'popup' <<<"$joined"
 grep -Fxq -- 'WORKTRUNK_BIN=/bin/true' <<<"$joined"
-grep -Fxq -- 'JQ_BIN=/usr/bin/jq' <<<"$joined"
+grep -Fxq -- "JQ_BIN=$jq_bin" <<<"$joined"
+grep -Fxq -- "FORESTR_BASH_BIN=$BASH" <<<"$joined"
 grep -Fxq -- 'CREATE_SCOPE=local' <<<"$joined"
 grep -Fxq -- "ACTIVE_REPO_ROOT=$repo" <<<"$joined"
 grep -Fxq -- 'MANAGER_SOURCE_WORKSPACE_ID=w1' <<<"$joined"

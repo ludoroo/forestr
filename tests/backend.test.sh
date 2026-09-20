@@ -4,8 +4,10 @@ set -euo pipefail
 repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 plugin_root="$repo_root/src"
 tmp=$(mktemp -d)
+tmp=$(cd "$tmp" && pwd -P)
 trap 'rm -rf "$tmp"' EXIT
-export JQ_BIN=/usr/bin/jq
+export JQ_BIN
+JQ_BIN=$(command -v jq)
 # shellcheck source=../src/lib.sh
 source "$plugin_root/lib.sh"
 # shellcheck source=../src/backend.sh

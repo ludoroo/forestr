@@ -8,6 +8,7 @@ plugin_root="$repo_root/src"
 source "$plugin_root/lib.sh"
 
 tmp=$(mktemp -d)
+tmp=$(cd "$tmp" && pwd -P)
 trap 'rm -rf "$tmp"' EXIT
 
 cat >"$tmp/herdr" <<'EOF'
@@ -101,5 +102,29 @@ exit 0
 EOF
 chmod +x "$tmp/tool"
 [[ $(forestr_find_executable tool "$tmp/tool") == "$tmp/tool" ]]
+[[ $(forestr_find_timeout "$tmp/tool") == "$tmp/tool" ]]
+if forestr_find_timeout "$tmp/missing" >/dev/null 2>&1; then
+    printf 'invalid timeout override was accepted\n' >&2
+    exit 1
+fi
+(
+    forestr_find_executable() {
+        case $1 in timeout) printf '/mock/timeout\n' ;; *) return 1 ;; esac
+    }
+    [[ $(forestr_find_timeout) == /mock/timeout ]]
+)
+(
+    forestr_find_executable() {
+        case $1 in gtimeout) printf '/mock/gtimeout\n' ;; *) return 1 ;; esac
+    }
+    [[ $(forestr_find_timeout) == /mock/gtimeout ]]
+)
+(
+    forestr_find_executable() { return 1; }
+    if forestr_find_timeout >/dev/null 2>&1; then
+        printf 'missing timeout utility was accepted\n' >&2
+        exit 1
+    fi
+)
 
 printf 'lib tests passed\n'

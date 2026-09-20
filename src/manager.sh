@@ -34,11 +34,28 @@ jq_bin=$(require_executable jq "${JQ_BIN:-}")
 export JQ_BIN=$jq_bin
 export FORESTR_GIT_BIN=$git_bin
 curl_bin=$(require_executable curl "${CURL_BIN:-}")
-setsid_bin=$(require_executable setsid "${SETSID_BIN:-}")
+bash_bin=$(require_executable bash "${FORESTR_BASH_BIN:-${BASH:-}}")
+if ! "$bash_bin" -c '(( BASH_VERSINFO[0] >= 4 ))' 2>/dev/null; then
+    printf 'Forestr requires Bash 4 or newer (FORESTR_BASH_BIN=%s).\n' "$bash_bin" >&2
+    exit 2
+fi
+printf -v bash_q '%q' "$bash_bin"
+if [[ $bash_q != "$bash_bin" ]]; then
+    printf 'Forestr requires a Bash executable path without whitespace or shell metacharacters (FORESTR_BASH_BIN=%s).\n' "$bash_bin" >&2
+    exit 2
+fi
+export FORESTR_BASH_BIN=$bash_bin
 backend_resolve "${WORKTRUNK_BIN:-}" || exit $?
 timeout_bin=
 if [[ $($jq_bin -r '.dependencies.gnu_timeout' <<<"$(backend_capabilities)") == true ]]; then
-    timeout_bin=$(require_executable timeout "${TIMEOUT_BIN:-}")
+    if [[ -n ${TIMEOUT_BIN:-} && ! -x ${TIMEOUT_BIN:-} ]]; then
+        printf 'Forestr timeout override is not executable: %s\n' "$TIMEOUT_BIN" >&2
+        exit 127
+    fi
+    if ! timeout_bin=$(forestr_find_timeout "${TIMEOUT_BIN:-}"); then
+        printf 'Forestr backend enrichment requires GNU timeout; install coreutils or set TIMEOUT_BIN.\n' >&2
+        exit 127
+    fi
 fi
 
 verify_runtime_tools() {
@@ -390,9 +407,30 @@ append_generation_warning() {
 }
 
 process_start_token() {
-    local pid=$1
-    [[ -r /proc/$pid/stat ]] || return 1
-    awk '{print $22}' "/proc/$pid/stat"
+    local pid=$1 token
+    token=$(LC_ALL=C ps -o lstart= -p "$pid" 2>/dev/null) || return 1
+    token=${token//[[:space:]]/}
+    [[ -n $token ]] || return 1
+    printf '%s\n' "$token"
+}
+
+producer_process_matches() {
+    local pid=$1 state_dir=$2 generation=$3 token=$4 current_token command
+    current_token=$(process_start_token "$pid" 2>/dev/null || true)
+    [[ -n $current_token && $current_token == "$token" ]] || return 1
+    command=$(ps -ww -o command= -p "$pid" 2>/dev/null || true)
+    [[ $command == *"manager.sh __produce $state_dir $generation"* ]]
+}
+
+terminate_producer() {
+    local pid=$1 pgid
+    pgid=$(ps -o pgid= -p "$pid" 2>/dev/null || true)
+    pgid=${pgid//[[:space:]]/}
+    if [[ -n $pgid && $pgid == "$pid" ]]; then
+        kill -- "-$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true
+    else
+        kill "$pid" 2>/dev/null || true
+    fi
 }
 
 acquire_producer_lock() {
@@ -409,17 +447,16 @@ acquire_producer_lock() {
 release_producer_lock() { rmdir "$1/producer.lock" 2>/dev/null || true; }
 
 stop_producer() {
-    local state_dir=$1 pid generation token current_token should_kill=false
+    local state_dir=$1 pid generation token should_kill=false
     if ! acquire_producer_lock "$state_dir"; then
         # A stale/contended lock must not defeat teardown. producer.pid is
         # atomically published, so an unlocked fallback is safe when paired
-        # with the recorded Linux start token and completed-generation guard.
+        # with the recorded process start token and completed-generation guard.
         [[ -d $state_dir && -f $state_dir/producer.pid ]] || return 0
         read -r pid generation token <"$state_dir/producer.pid" || return 0
         if [[ -n ${pid:-} && -n ${generation:-} && ! -e $state_dir/completed.$generation ]]; then
-            current_token=$(process_start_token "$pid" 2>/dev/null || true)
-            if [[ -n $current_token && $current_token == "$token" ]]; then
-                kill -- "-$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true
+            if producer_process_matches "$pid" "$state_dir" "$generation" "$token"; then
+                terminate_producer "$pid"
             fi
         fi
         return 0
@@ -427,12 +464,11 @@ stop_producer() {
     [[ ! -f $state_dir/producer.pid ]] || read -r pid generation token <"$state_dir/producer.pid"
     rm -f "$state_dir/producer.pid"
     if [[ -n ${pid:-} && -n ${generation:-} && ! -e $state_dir/completed.$generation ]]; then
-        current_token=$(process_start_token "$pid" 2>/dev/null || true)
-        [[ -n $current_token && $current_token == "$token" ]] && should_kill=true
+        producer_process_matches "$pid" "$state_dir" "$generation" "$token" && should_kill=true
     fi
     release_producer_lock "$state_dir"
     if $should_kill; then
-        kill -- "-$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true
+        terminate_producer "$pid"
     fi
 }
 
@@ -444,8 +480,8 @@ register_producer() {
         # The parent could not publish ownership (normally because teardown
         # removed the state directory). Terminate only the exact process whose
         # start token was captured above; never leave an untracked producer.
-        if [[ $(process_start_token "$pid" 2>/dev/null || true) == "$token" ]]; then
-            kill -- "-$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true
+        if producer_process_matches "$pid" "$state_dir" "$generation" "$token"; then
+            terminate_producer "$pid"
         fi
         return 0
     fi
@@ -566,7 +602,7 @@ notify_manage_snapshot() {
     for _ in {1..100}; do [[ -S $socket ]] && break; sleep 0.01; done
     [[ -S $socket ]] || return 0
     manager_q=$(printf '%q' "$plugin_root/manager.sh"); state_q=$(printf '%q' "$state_dir")
-    action="transform-header(bash $manager_q __header $state_q)+reload(bash $manager_q __background-rows $state_q $generation)"
+    action="transform-header($bash_q $manager_q __header $state_q)+reload($bash_q $manager_q __background-rows $state_q $generation)"
     "$curl_bin" --silent --show-error --unix-socket "$socket" -X POST http://localhost/ -d "$action" >/dev/null 2>&1 || true
 }
 
@@ -674,7 +710,7 @@ produce_manage_layers() {
 
 start_refresh() {
     local state_dir=$1 force_topology=${2:-false} preserve_messages=${3:-false}
-    local generation snapshot seed mode producer_pid
+    local generation snapshot seed mode producer_pid monitor_was_on=false
     stop_producer "$state_dir"
     generation=$(( $(current_generation "$state_dir") + 1 ))
     printf '%s\n' "$generation" >"$state_dir/generation"
@@ -687,9 +723,14 @@ start_refresh() {
     fi
     snapshot="$state_dir/snapshot.$generation"; seed="$state_dir/active.$generation.rows"
     active_seed_row >"$seed"; header_row >"$snapshot"; merge_snapshot_rows "$snapshot" "$seed"; rm -f "$seed"
-    "$setsid_bin" bash "$plugin_root/manager.sh" __produce "$state_dir" "$generation" \
+    # Bash job control gives the producer its own process group on Linux and
+    # macOS without relying on the Linux-only setsid utility.
+    [[ $- != *m* ]] || monitor_was_on=true
+    set -m
+    "$bash_bin" "$plugin_root/manager.sh" __produce "$state_dir" "$generation" \
         </dev/null >"$state_dir/producer.$generation.log" 2>&1 &
     producer_pid=$!
+    $monitor_was_on || set +m
     register_producer "$state_dir" "$generation" "$producer_pid"
 }
 
@@ -1174,7 +1215,7 @@ printf 'manage\n' >"$state_dir/mode"; printf '%s\n' "$create_scope" >"$state_dir
 printf 'false\n' >"$state_dir/search"; printf '0\n' >"$state_dir/generation"
 
 manager_script_q=$(printf '%q' "$plugin_root/manager.sh")
-manager_q="bash $manager_script_q"
+manager_q="$bash_q $manager_script_q"
 state_q=$(printf '%q' "$state_dir")
 rows_cmd="$manager_q __rows $state_q"
 header_cmd="$manager_q __header $state_q"
@@ -1244,7 +1285,7 @@ initial_snapshot="$state_dir/snapshot.$(current_generation "$state_dir")"
 
 set +e
 env -u FZF_API_KEY "$fzf_bin" \
-    --disabled --with-shell='bash -c' --delimiter=$'\t' --with-nth=3.. \
+    --disabled --with-shell="$bash_q -c" --delimiter=$'\t' --with-nth=3.. \
     --track --id-nth=2 --listen-unsafe="$state_dir/fzf.sock" \
     --header-lines=1 --reverse --info=inline-right --border=none --input-border=bottom --footer-border=none \
     --color='16,fg:-1,bg:-1,gutter:-1,input-bg:-1,list-bg:-1,header-bg:-1,footer-bg:-1,bg+:5,fg+:0:bold,hl:magenta,hl+:0:bold,pointer:-1,prompt:magenta,query:magenta,ghost:bright-black:dim,input-border:bright-black,header:bright-black,footer:bright-black,info:bright-black,disabled:bright-black,spinner:magenta' \

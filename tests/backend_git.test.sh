@@ -4,8 +4,10 @@ set -euo pipefail
 repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 plugin_root="$repo_root/src"
 tmp=$(mktemp -d)
+tmp=$(cd "$tmp" && pwd -P)
 trap 'rm -rf "$tmp"' EXIT
-export JQ_BIN=/usr/bin/jq FORESTR_GIT_BIN=/usr/bin/git
+export JQ_BIN FORESTR_GIT_BIN=/usr/bin/git
+JQ_BIN=$(command -v jq)
 export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.fsmonitor GIT_CONFIG_VALUE_0=false
 # shellcheck source=../src/backend.sh
 source "$plugin_root/backend.sh"
@@ -91,7 +93,7 @@ FORESTR_GIT_BIN=/usr/bin/git
 assert_ok "$result"
 [[ $("$JQ_BIN" -r .path <<<"$result") == "$local_path" && -d $local_path ]]
 [[ $("$FORESTR_GIT_BIN" -C "$local_path" symbolic-ref -q HEAD) == refs/heads/local/topic ]]
-[[ $(tr '\0' '\n' <"$tmp/git-add-args" | paste -sd ' ') == "-C $repo worktree add --no-guess-remote $local_path local/topic" ]]
+[[ $(tr '\0' '\n' <"$tmp/git-add-args" | paste -s -d ' ' -) == "-C $repo worktree add --no-guess-remote $local_path local/topic" ]]
 
 # If another checkout wins after prevalidation, Git rejects the one add command;
 # the winning checkout is retained and no detached manager checkout is created.
@@ -369,7 +371,8 @@ chmod +x "$manager_bin"/*
 # without invoking its remove operation or pruning registration metadata.
 no_stale_plugin="$tmp/no-stale-plugin"; mkdir "$no_stale_plugin"
 cp "$plugin_root"/{manager.sh,lib.sh,backend.sh,backend_git.sh} "$no_stale_plugin/"
-sed -i 's/remove_stale:true/remove_stale:false/' "$no_stale_plugin/backend_git.sh"
+sed 's/remove_stale:true/remove_stale:false/' "$no_stale_plugin/backend_git.sh" >"$no_stale_plugin/backend_git.sh.new"
+mv "$no_stale_plugin/backend_git.sh.new" "$no_stale_plugin/backend_git.sh"
 no_stale_path="$tmp/removals-no-stale-capability"
 "$FORESTR_GIT_BIN" -C "$remove_repo" worktree add -q -b no-stale-capability "$no_stale_path"
 rm -rf "$no_stale_path"

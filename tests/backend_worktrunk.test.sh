@@ -4,8 +4,10 @@ set -euo pipefail
 repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 plugin_root="$repo_root/src"
 tmp=$(mktemp -d)
+tmp=$(cd "$tmp" && pwd -P)
 trap 'rm -rf "$tmp"' EXIT
-export JQ_BIN=/usr/bin/jq FORESTR_BACKEND=worktrunk
+export JQ_BIN FORESTR_BACKEND=worktrunk
+JQ_BIN=$(command -v jq)
 # shellcheck source=../src/backend.sh
 source "$plugin_root/backend.sh"
 # shellcheck source=../src/backend_worktrunk.sh
@@ -34,26 +36,26 @@ request() { "$JQ_BIN" -cn --arg operation "$1" --arg mode "${2:-open}" --argjson
 
 result=$(backend_dispatch "$(request open open)")
 "$JQ_BIN" -e '.ok and .path == "/repo/.topic" and .branch == "topic"' <<<"$result" >/dev/null
-[[ $(args "$tmp/args" | paste -sd ' ') == '-C /repo switch topic --no-cd --format=json' ]]
+[[ $(args "$tmp/args" | paste -s -d ' ' -) == '-C /repo switch topic --no-cd --format=json' ]]
 
 backend_dispatch "$(request open create)" >/dev/null
-[[ $(args "$tmp/args" | paste -sd ' ') == '-C /repo switch --create topic --no-cd --format=json' ]]
+[[ $(args "$tmp/args" | paste -s -d ' ' -) == '-C /repo switch --create topic --no-cd --format=json' ]]
 backend_dispatch "$(request open force-create)" >/dev/null
-[[ $(args "$tmp/args" | paste -sd ' ') == '-C /repo switch --create --clobber topic --no-cd --format=json' ]]
+[[ $(args "$tmp/args" | paste -s -d ' ' -) == '-C /repo switch --create --clobber topic --no-cd --format=json' ]]
 # No hook-disabling flag may be introduced.
 ! args "$tmp/args" | grep -Eq 'hook|verify'
 
 backend_dispatch "$(request remove open false)" >/dev/null
-[[ $(args "$tmp/args" | paste -sd ' ') == '-C /repo remove --foreground --format=json topic' ]]
+[[ $(args "$tmp/args" | paste -s -d ' ' -) == '-C /repo remove --foreground --format=json topic' ]]
 backend_dispatch "$(request remove open true)" >/dev/null
-[[ $(args "$tmp/args" | paste -sd ' ') == '-C /repo remove --foreground --format=json --force --force-delete topic' ]]
+[[ $(args "$tmp/args" | paste -s -d ' ' -) == '-C /repo remove --foreground --format=json --force --force-delete topic' ]]
 
 result=$(backend_dispatch "$($JQ_BIN -cn --arg timeout "$tmp/timeout" \
   '{version:1,operation:"enrich",repo_root:"/repo",timeout_bin:$timeout,timeout_ms:10000,collection_timeout_ms:5000}')")
 "$JQ_BIN" -e '.ok and .items == [{path:"/repo/.topic",branch:"topic",head:"abc123",symbols:"!↑"}]' <<<"$result" >/dev/null
-actual=$(args "$tmp/args" | paste -sd ' ')
+actual=$(args "$tmp/args" | paste -s -d ' ' -)
 [[ $actual == '-C /repo list --format=json --config-set list.json-schema=2 --config-set list.full=false --config-set list.timeout-ms=5000' ]]
-actual=$(args "$tmp/timeout-args" | paste -sd ' ')
+actual=$(args "$tmp/timeout-args" | paste -s -d ' ' -)
 [[ $actual == *'--signal=TERM --kill-after=0.250s 10.000s '* ]]
 
 printf 'Worktrunk adapter tests passed\n'

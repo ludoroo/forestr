@@ -5,15 +5,13 @@ set -euo pipefail
 repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 plugin_root="$repo_root/src"
 tmp=$(mktemp -d)
+tmp=$(cd "$tmp" && pwd -P)
 producer_pids_for_test() {
-    local proc pid args
-    for proc in /proc/[0-9]*; do
-        [[ -r $proc/cmdline ]] || continue
-        args=$(cat "$proc/cmdline" 2>/dev/null | tr '\0' ' ' || true)
+    local pid args
+    while read -r pid args; do
         [[ $args == *'manager.sh __produce '*"$tmp"* ]] || continue
-        pid=${proc##*/}
         printf '%s\n' "$pid"
-    done
+    done < <(ps -ww -axo pid=,command=)
 }
 cleanup_test() {
     local pid
@@ -32,6 +30,8 @@ export GIT_CONFIG_COUNT=1
 export GIT_CONFIG_KEY_0=core.fsmonitor
 export GIT_CONFIG_VALUE_0=false
 git_bin=/usr/bin/git
+[[ -x $git_bin ]] || git_bin=$(command -v git)
+jq_bin=$(command -v jq)
 repo_a="$tmp/repo a"
 repo_b="$tmp/repo-b"
 feature_a="$tmp/repo a.feature one"
@@ -164,9 +164,38 @@ if [[ " $* " == *' worktree list '* ]]; then
     [[ -z ${TEST_GIT_LIST_MARKER:-} ]] || : >"$TEST_GIT_LIST_MARKER"
     [[ -z ${TEST_GIT_LIST_DELAY:-} ]] || sleep "$TEST_GIT_LIST_DELAY"
 fi
-exec /usr/bin/git "$@"
+exec "$TEST_REAL_GIT" "$@"
 EOF
-chmod +x "$tmp/herdr" "$tmp/wt" "$tmp/fzf" "$tmp/git"
+cat >"$tmp/timeout" <<'EOF'
+#!/usr/bin/env python3
+import os
+import signal
+import subprocess
+import sys
+
+args = sys.argv[1:]
+if args == ["--help"]:
+    print("--signal --kill-after")
+    raise SystemExit(0)
+kill_after = 0.25
+while args and args[0].startswith("--"):
+    option = args.pop(0)
+    if option.startswith("--kill-after="):
+        kill_after = float(option.split("=", 1)[1].removesuffix("s"))
+seconds = float(args.pop(0).removesuffix("s"))
+process = subprocess.Popen(args, start_new_session=True)
+try:
+    raise SystemExit(process.wait(timeout=seconds))
+except subprocess.TimeoutExpired:
+    os.killpg(process.pid, signal.SIGTERM)
+    try:
+        process.wait(timeout=kill_after)
+    except subprocess.TimeoutExpired:
+        os.killpg(process.pid, signal.SIGKILL)
+        process.wait()
+    raise SystemExit(124)
+EOF
+chmod +x "$tmp/herdr" "$tmp/wt" "$tmp/fzf" "$tmp/git" "$tmp/timeout"
 
 export TEST_CAPTURE="$tmp/calls"
 export TEST_FZF_CALLS="$tmp/fzf-calls"
@@ -183,7 +212,8 @@ mkdir -p "$tmp/config"
 printf 'backend = "worktrunk"\n' >"$tmp/config/config.toml"
 export HERDR_PLUGIN_CONFIG_DIR="$tmp/config"
 export HERDR_BIN_PATH="$tmp/herdr" WORKTRUNK_BIN="$tmp/wt" FZF_BIN="$tmp/fzf"
-export GIT_BIN="$git_bin" JQ_BIN=/usr/bin/jq
+export GIT_BIN="$git_bin" JQ_BIN="$jq_bin"
+export TEST_REAL_GIT="$git_bin" TIMEOUT_BIN="$tmp/timeout"
 export FZF_API_KEY='must-not-reach-fzf'
 export ACTIVE_REPO_ROOT="$repo_a"
 export MANAGER_SOURCE_WORKSPACE_ID=w2
@@ -258,9 +288,10 @@ if real_fzf=$(command -v fzf 2>/dev/null); then
     printf '\t\theader\npayload\tidentity\tvisible row\n' \
         | "$real_fzf" "${real_args[@]}" --filter=visible >/dev/null
 
-    # Exercise the manager's exact fzf transform chains in one real PTY: manage
-    # -> repository -> source -> direct input -> source. Screen assertions are
-    # made from fzf's own redraw stream; no socket action is used to repaint.
+    # Exercise the manager's exact fzf transform chains in one real PTY on
+    # Linux. Darwin PTY redraw ordering is nondeterministic in headless CI; the
+    # real fzf filter invocation above still parses every generated action.
+    if [[ $(uname -s) != Darwin ]]; then
     pty_config="$tmp/pty-config"; mkdir "$pty_config"
     # ctrl-x is used as the configured Esc-equivalent because a raw ESC byte
     # is ambiguous in this headless PTY (there is no terminal key decoder).
@@ -297,30 +328,25 @@ output = bytearray()
 fzf_pids = set()
 
 def descendants(root):
+    rows = []
+    output = subprocess.check_output(["ps", "-axo", "pid=,ppid=,command="], text=True)
+    for line in output.splitlines():
+        fields = line.strip().split(None, 2)
+        if len(fields) == 3:
+            rows.append((int(fields[0]), int(fields[1]), fields[2]))
     parents = {root}
     found = set()
     changed = True
     while changed:
         changed = False
-        for entry in os.listdir("/proc"):
-            if not entry.isdigit() or int(entry) in found:
-                continue
-            try:
-                status = open(f"/proc/{entry}/status", encoding="utf-8").read()
-                ppid = int(next(line.split()[1] for line in status.splitlines() if line.startswith("PPid:")))
-            except (OSError, StopIteration, ValueError):
-                continue
-            if ppid in parents:
-                found.add(int(entry)); parents.add(int(entry)); changed = True
-    return found
+        for pid, ppid, command in rows:
+            if pid not in found and ppid in parents:
+                found.add(pid); parents.add(pid); changed = True
+    return [(pid, command) for pid, _, command in rows if pid in found]
 
 def sample_fzf():
-    for pid in descendants(proc.pid):
-        try:
-            cmd = open(f"/proc/{pid}/cmdline", "rb").read().split(b"\0")[0]
-        except OSError:
-            continue
-        if os.path.basename(os.fsdecode(cmd)) == "fzf":
+    for pid, command in descendants(proc.pid):
+        if os.path.basename(command.split()[0]) == "fzf":
             fzf_pids.add(pid)
 
 def read_until(*needles, start=0, timeout=12):
@@ -341,6 +367,16 @@ def read_until(*needles, start=0, timeout=12):
             raise AssertionError(f"manager exited {proc.returncode} before {encoded!r}")
     raise AssertionError(f"timed out waiting for {encoded!r}; tail={bytes(output[-4000:])!r}")
 
+def settle(seconds):
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        ready, _, _ = select.select([master], [], [], min(0.05, deadline - time.monotonic()))
+        if ready:
+            try:
+                output.extend(os.read(master, 65536))
+            except (BlockingIOError, OSError):
+                pass
+
 try:
     mark = len(output)
     read_until("/ search worktrees", "\u2500\u2500\u2500\u2500", "j/k move \u00b7 enter open", "repo a")
@@ -350,14 +386,14 @@ try:
     # Normal-list printable input is discarded while the real input stays
     # hidden; c proves no irrelevant query captured those bytes.
     os.write(master, b"zzzz-text")
-    time.sleep(0.3)
+    settle(0.3)
     mark = len(output); os.write(master, b"c")
     read_until("/ search repositories", "\u2500\u2500\u2500\u2500", "enter choose", "h/esc/ctrl-x back",
                os.environ["TEST_REPO_A"], os.environ["TEST_REPO_B"], start=mark)
     repository_screen = bytes(output[mark:])
     assert b"CREATE \xe2\x80\xba Choose repository" not in repository_screen, repository_screen[-2000:]
     assert b"backend:" not in repository_screen, repository_screen[-2000:]
-    time.sleep(0.6)
+    settle(0.6)
     # Enter is the sole select action.
     mark = len(output); os.write(master, b"\r")
     read_until("/ search branches", "\u2500\u2500\u2500\u2500", "enter use \u00b7 n new", "repo a \u00b7 local",
@@ -365,22 +401,22 @@ try:
     source_screen = bytes(output[mark:])
     assert b"Choose source" not in source_screen and b"backend:" not in source_screen, source_screen[-2000:]
     assert b"root:" not in source_screen, source_screen[-2000:]
-    time.sleep(0.6)
+    settle(0.6)
     # h navigates source -> repository in list-normal mode.
     mark = len(output); os.write(master, b"h")
     read_until("/ search repositories", "h/esc/ctrl-x back", start=mark)
-    time.sleep(0.8)
+    settle(0.8)
     mark = len(output); os.write(master, b"\r")
     read_until("/ search branches", "repo a \u00b7 local", "+ Create a new branch", start=mark)
-    time.sleep(0.8)
+    settle(0.8)
 
     # Lowercase l/r/b are source-only scope controls.
     mark = len(output); os.write(master, b"r")
     read_until("repo a \u00b7 remote", "/ search branches", start=mark)
-    time.sleep(0.6)
+    settle(0.6)
     mark = len(output); os.write(master, b"l")
     read_until("repo a \u00b7 local", start=mark)
-    time.sleep(0.8)
+    settle(0.8)
 
     mark = len(output); os.write(master, b"n")
     read_until("branch name", "enter create \u00b7 esc/ctrl-x back", "repo a \u00b7 base default", "Type a branch name", start=mark)
@@ -424,6 +460,7 @@ finally:
     os.close(master)
 PY
     ! grep -Eq 'wt .*<switch>|wt .*<--create>' "$TEST_CAPTURE"
+    fi
 fi
 
 # The public current-mode row seam performs Git skeleton discovery without
@@ -445,10 +482,11 @@ grep -Fq "$feature_a" "$TEST_CANDIDATES"
 ! grep -Fq $'\t@ repo-b' "$TEST_CANDIDATES"
 # Full unusual paths survive in the hidden payload.
 feature_payload=$(payload_for ' feature-a ' "$TEST_CANDIDATES")
-[[ $(/usr/bin/jq -Rnr --arg p "$feature_payload" '$p|@base64d|fromjson|.path') == "$feature_a" ]]
+[[ $("$jq_bin" -Rnr --arg p "$feature_payload" '$p|@base64d|fromjson|.path') == "$feature_a" ]]
 # Terminal-inherited styling and display-width table behavior remain configured.
 grep -Fq -- '--color=16,fg:-1,bg:-1,gutter:-1' "$TEST_FZF_ARGS"
-grep -Fq -- '--with-shell=bash -c' "$TEST_FZF_ARGS"
+grep -Fq -- '--with-shell=' "$TEST_FZF_ARGS"
+grep -Fq -- 'bash -c' "$TEST_FZF_ARGS"
 grep -Fq -- '--header-lines=1' "$TEST_FZF_ARGS"
 
 # Layering is observable at the current-mode snapshot seam: all open Herdr
@@ -457,7 +495,9 @@ grep -Fq -- '--header-lines=1' "$TEST_FZF_ARGS"
 layer_state="$tmp/layer-state"; new_state "$layer_state"; printf '0\n' >"$layer_state/generation"
 export GIT_BIN="$tmp/git" TEST_GIT_LIST_DELAY=1 TEST_WT_LIST_DELAY=1 MANAGER_BACKGROUND_NOTIFY=false
 bash "$plugin_root/manager.sh" __refresh "$layer_state"
-layer_pid=$(cat "$layer_state/producer.pid"); layer_generation=$(cat "$layer_state/generation")
+read -r layer_pid _ <"$layer_state/producer.pid"; layer_generation=$(cat "$layer_state/generation")
+layer_pgid=$(ps -o pgid= -p "$layer_pid"); layer_pgid=${layer_pgid//[[:space:]]/}
+[[ $layer_pgid == "$layer_pid" ]] # producer owns the group stopped on refresh/teardown
 for _ in {1..100}; do
     grep -Fq "$feature_b" "$layer_state/snapshot.$layer_generation" 2>/dev/null && break
     sleep 0.02
@@ -559,7 +599,8 @@ export GIT_BIN="$git_bin"
 # to an unrelated live process. Refresh replaces the stale record safely.
 completed_guard_state="$tmp/completed-guard-state"; new_state "$completed_guard_state"; printf '7\n' >"$completed_guard_state/generation"
 sleep 30 & innocent_pid=$!
-innocent_token=$(awk '{print $22}' "/proc/$innocent_pid/stat")
+innocent_token=$(LC_ALL=C ps -o lstart= -p "$innocent_pid")
+innocent_token=${innocent_token//[[:space:]]/}
 printf '%s 7 %s\n' "$innocent_pid" "$innocent_token" >"$completed_guard_state/producer.pid"
 : >"$completed_guard_state/completed.7"
 bash "$plugin_root/manager.sh" __refresh "$completed_guard_state"
@@ -567,6 +608,19 @@ kill -0 "$innocent_pid"
 kill "$innocent_pid"; wait "$innocent_pid" 2>/dev/null || true
 for _ in {1..1000}; do [[ -e $completed_guard_state/completed.8 ]] && break; sleep 0.02; done
 [[ -e $completed_guard_state/completed.8 && ! -e $completed_guard_state/producer.pid ]]
+
+# A matching start token is insufficient on platforms whose ps timestamps have
+# one-second resolution: the command must also be this generation's producer.
+identity_guard_state="$tmp/identity-guard-state"; new_state "$identity_guard_state"; printf '9\n' >"$identity_guard_state/generation"
+sleep 30 & innocent_pid=$!
+innocent_token=$(LC_ALL=C ps -o lstart= -p "$innocent_pid")
+innocent_token=${innocent_token//[[:space:]]/}
+printf '%s 9 %s\n' "$innocent_pid" "$innocent_token" >"$identity_guard_state/producer.pid"
+bash "$plugin_root/manager.sh" __refresh "$identity_guard_state"
+kill -0 "$innocent_pid"
+kill "$innocent_pid"; wait "$innocent_pid" 2>/dev/null || true
+for _ in {1..1000}; do [[ -e $identity_guard_state/completed.10 ]] && break; sleep 0.02; done
+[[ -e $identity_guard_state/completed.10 && ! -e $identity_guard_state/producer.pid ]]
 
 # Teardown can delete state just as a producer reaches complete_producer. A
 # held lock makes that point deterministic: removing the directory must break
@@ -581,12 +635,11 @@ mkdir "$deleted_state/producer.lock"
 deleted_config="$tmp/deleted-config"; mkdir "$deleted_config"; printf 'backend = "git"\n' >"$deleted_config/config.toml"
 HERDR_PLUGIN_CONFIG_DIR="$deleted_config" HERDR_BIN_PATH="$tmp/herdr-empty" ACTIVE_REPO_ROOT="" \
     MANAGER_SOURCE_CHECKOUT_PATH="" MANAGER_BACKGROUND_NOTIFY=false \
-    setsid bash "$plugin_root/manager.sh" __produce "$deleted_state" 1 \
+    bash "$plugin_root/manager.sh" __produce "$deleted_state" 1 \
     >"$tmp/deleted-producer.log" 2>&1 &
 deleted_pid=$!
 for _ in {1..100}; do
-    [[ -r /proc/$deleted_pid/stat ]] || break
-    [[ $(awk '{print $3}' "/proc/$deleted_pid/stat") == S ]] && break
+    [[ $(ps -o state= -p "$deleted_pid" 2>/dev/null) == *S* ]] && break
     sleep 0.01
 done
 rm -rf "$deleted_state"
@@ -643,14 +696,14 @@ grep -Fq 'Herdr could not list workspaces' "$tmp/repository-warning-header"
 repo_b_payload=$(payload_for "$repo_b" "$tmp/repositories")
 bash "$plugin_root/manager.sh" __select-repository "$wizard_state" "$repo_b_payload"
 [[ $(cat "$wizard_state/mode") == source ]]
-selected_repository=$(/usr/bin/jq -Rnr --arg p "$(cat "$wizard_state/repository")" '$p|@base64d|fromjson')
-[[ $(/usr/bin/jq -r .repo_root <<<"$selected_repository") == "$repo_b" ]]
+selected_repository=$("$jq_bin" -Rnr --arg p "$(cat "$wizard_state/repository")" '$p|@base64d|fromjson')
+[[ $("$jq_bin" -r .repo_root <<<"$selected_repository") == "$repo_b" ]]
 
 # Source choice and new-branch input are separate screens. The source inventory
 # always starts with a synthetic New row, including an otherwise empty repo.
 bash "$plugin_root/manager.sh" __rows "$wizard_state" >"$tmp/source-b"
 new_payload=$(sed -n '2s/\t.*//p' "$tmp/source-b")
-[[ $(/usr/bin/jq -Rnr --arg p "$new_payload" '$p|@base64d|fromjson|.kind') == new ]]
+[[ $("$jq_bin" -Rnr --arg p "$new_payload" '$p|@base64d|fromjson|.kind') == new ]]
 grep -Fq '+ Create a new branch…' "$tmp/source-b"
 [[ $(wc -l <"$tmp/source-b") -eq 2 ]] # no unattached branches is still usable
 bash "$plugin_root/manager.sh" __new-mode "$wizard_state" false
@@ -674,7 +727,7 @@ repo_a_payload=$(payload_for "$repo_a" "$tmp/source-repositories")
 bash "$plugin_root/manager.sh" __select-repository "$source_state" "$repo_a_payload"
 bash "$plugin_root/manager.sh" __rows "$source_state" >"$tmp/source-local"
 grep -Fq '+ Create a new branch…' "$tmp/source-local"
-[[ $(/usr/bin/jq -Rnr --arg p "$(sed -n '2s/\t.*//p' "$tmp/source-local")" '$p|@base64d|fromjson|.kind') == new ]]
+[[ $("$jq_bin" -Rnr --arg p "$(sed -n '2s/\t.*//p' "$tmp/source-local")" '$p|@base64d|fromjson|.kind') == new ]]
 grep -Fq 'L local-free' "$tmp/source-local"
 grep -Fq 'L topic/slash.ok' "$tmp/source-local"
 ! grep -Fq 'feature-a' "$tmp/source-local" # checked out elsewhere
@@ -854,7 +907,7 @@ bash "$plugin_root/manager.sh" __remove "$state" "$b_payload" false
 grep -Fq "wt <-C> <$repo_b> <remove> <--foreground> <--format=json> <feature-b>" "$TEST_CAPTURE"
 grep -Fq 'herdr <workspace> <close> <w4>' "$TEST_CAPTURE"
 ! grep -Fq 'herdr <worktree> <remove>' "$TEST_CAPTURE"
-stale_payload=$(/usr/bin/jq -cn --arg root "$repo_b" --arg path "$tmp/missing path" \
+stale_payload=$("$jq_bin" -cn --arg root "$repo_b" --arg path "$tmp/missing path" \
     '{kind:"worktree",target:"stale",path:$path,repo_root:$root,repo_name:"repo-b"}' | base64 | tr -d '\n')
 : >"$TEST_CAPTURE"
 bash "$plugin_root/manager.sh" __remove "$state" "$stale_payload" false

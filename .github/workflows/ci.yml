@@ -19,7 +19,7 @@ jobs:
       - name: Install Linux runtime requirements
         run: |
           sudo apt-get update
-          sudo apt-get install --yes bash git jq curl util-linux coreutils python3 ca-certificates procps
+          sudo apt-get install --yes bash git jq curl coreutils python3 ca-certificates procps
 
       - name: Install Herdr 0.9+
         env:
@@ -63,7 +63,6 @@ jobs:
         run: |
           curl --help all | grep -q -- '--unix-socket'
           timeout --help | grep -q -- '--kill-after'
-          command -v setsid
 
       - name: Run repository checks
         run: ./test.sh
@@ -72,6 +71,61 @@ jobs:
         if: always()
         run: |
           if pgrep -af '[m]anager.sh __produce'; then
+            echo 'orphan manager.sh __produce process found' >&2
+            exit 1
+          fi
+
+  test-macos:
+    runs-on: macos-14
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - name: Install macOS runtime requirements
+        run: brew install bash coreutils fzf jq python
+
+      - name: Install Herdr 0.9+
+        env:
+          HERDR_VERSION: 0.9.1
+          HERDR_ARM64_SHA256: 5fc7a7e7adfaca56fa80aa89dcb025693357268dab8285b9ce2d08a2313c89de
+          HERDR_X86_64_SHA256: 053be0639935fe54ab5efbdb46651054e4f6a753a5b43153c88bd6912bce1e94
+        run: |
+          case "$(uname -m)" in
+            arm64) asset=herdr-macos-aarch64; checksum=$HERDR_ARM64_SHA256 ;;
+            x86_64) asset=herdr-macos-x86_64; checksum=$HERDR_X86_64_SHA256 ;;
+            *) echo "unsupported macOS architecture: $(uname -m)" >&2; exit 1 ;;
+          esac
+          download=$(mktemp)
+          trap 'rm -f "$download"' EXIT
+          curl --fail --location --silent --show-error \
+            --output "$download" \
+            "https://github.com/herdrdev/herdr/releases/download/v${HERDR_VERSION}/${asset}"
+          printf '%s  %s\n' "$checksum" "$download" | shasum --algorithm 256 --check --status
+          sudo install -m 0755 "$download" /usr/local/bin/herdr
+          version=$(herdr --version | awk '{print $2}')
+          test "$(printf '%s\n' 0.9 "$version" | sort -V | head -n1)" = 0.9
+
+      - name: Verify macOS runtime capabilities
+        run: |
+          export PATH="$(brew --prefix)/bin:$PATH"
+          brew_bash="$(brew --prefix)/bin/bash"
+          "$brew_bash" --version | head -n1
+          test "$("$brew_bash" -c 'printf %s "${BASH_VERSINFO[0]}"')" -ge 4
+          curl --help all | grep -q -- '--unix-socket'
+          gtimeout --help | grep -q -- '--kill-after'
+          PATH="$(brew --prefix)/bin:$PATH" "$brew_bash" -c \
+            'source src/lib.sh; test "$(forestr_find_timeout)" = "$(command -v gtimeout)"'
+          fzf --help | grep -q -- '--listen-unsafe'
+
+      - name: Run repository checks
+        run: PATH="$(brew --prefix)/bin:$PATH" ./test.sh
+
+      - name: Check for orphaned refresh producers
+        if: always()
+        run: |
+          if pgrep -fl '[m]anager.sh __produce'; then
             echo 'orphan manager.sh __produce process found' >&2
             exit 1
           fi

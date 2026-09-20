@@ -1,6 +1,6 @@
 # Forestr
 
-Forestr is a private Linux plugin for [Herdr](https://herdr.dev/) that manages Git branch worktrees in one fast, modal `fzf` popup. It discovers repositories represented by Herdr workspaces, lists existing worktrees and available branches, opens or creates a checkout, focuses the matching workspace, and safely removes selected worktrees.
+Forestr is a private Linux and macOS plugin for [Herdr](https://herdr.dev/) that manages Git branch worktrees in one fast, modal `fzf` popup. It discovers repositories represented by Herdr workspaces, lists existing worktrees and available branches, opens or creates a checkout, focuses the matching workspace, and safely removes selected worktrees.
 
 - Plugin ID: `ludoroo.forestr`
 - Action: `ludoroo.forestr.open`
@@ -12,22 +12,29 @@ Forestr is a private Linux plugin for [Herdr](https://herdr.dev/) that manages G
 
 ## Requirements
 
-Forestr supports **Linux only** and requires:
+Forestr supports **Linux and macOS** and requires:
 
-- Bash 4 or newer (associative arrays)
+- Bash 4 or newer (associative arrays). macOS's system Bash is too old; install a current Bash with `brew install bash`.
 - Herdr 0.9 or newer
 - Git
 - `jq`
 - `fzf` 0.74 or newer, including `--track`, `--id-nth`, `--listen-unsafe`, transform actions, input/footer borders, and component color options
 - `curl` built with Unix-socket support (`--unix-socket`)
-- `setsid` (normally supplied by `util-linux`)
 
 Optional backend tooling:
 
 - [Worktrunk](https://worktrunk.dev/) (`wt`) enables the Worktrunk backend, including clobber-create, relocation-aware operations, and richer status symbols.
-- GNU `timeout` (normally supplied by `coreutils`) is required only when Worktrunk status enrichment is enabled. It must support `--signal` and `--kill-after`.
+- GNU `timeout` (normally supplied by `coreutils`) is required only when Worktrunk status enrichment is enabled. Enrichment defaults to on when `wt` is found; install `coreutils` or set `enrich_backend = false`. The utility must support `--signal` and `--kill-after`; Homebrew's `gtimeout` name is detected automatically.
 
-Forestr searches common executable locations. Explicit `HERDR_BIN`, `FZF_BIN`, `GIT_BIN`, `JQ_BIN`, `CURL_BIN`, `SETSID_BIN`, `WORKTRUNK_BIN`, and `TIMEOUT_BIN` overrides are also supported.
+Forestr searches common executable locations, including Apple Silicon and Intel Homebrew prefixes. Explicit `BASH_BIN`, `HERDR_BIN`, `FZF_BIN`, `GIT_BIN`, `JQ_BIN`, `CURL_BIN`, `WORKTRUNK_BIN`, and `TIMEOUT_BIN` overrides are also supported. Because fzf accepts its shell as a whitespace-split command, the Bash executable path must not contain whitespace or shell metacharacters.
+
+On macOS, install the non-system runtime dependencies with:
+
+```bash
+brew install bash jq fzf
+# Optional: required for Worktrunk status enrichment
+brew install coreutils
+```
 
 ## Install
 
@@ -104,7 +111,7 @@ Copy [`config.example.toml`](config.example.toml) to `config.toml` in that direc
 
 Runtime plugin code lives in [`src/`](src/), while behavior tests live in [`tests/`](tests/). The Herdr manifest and user-facing example configuration remain at the repository root.
 
-On Linux, run all behavior tests, Bash syntax checks, TOML parsing, stale-name checks, and Git whitespace checks with:
+On Linux or macOS, run all behavior tests, Bash syntax checks, TOML parsing, stale-name checks, and Git whitespace checks with:
 
 ```bash
 ./test.sh

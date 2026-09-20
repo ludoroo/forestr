@@ -4,13 +4,21 @@ set -euo pipefail
 
 repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 plugin_root="$repo_root/src"
-tmp=$(mktemp -d /tmp/forestr-manifest.XXXXXX)
+case $(uname -s) in
+    Darwin) test_tmp_root=${FORESTR_TEST_TMPDIR:-/tmp} ;;
+    *) test_tmp_root=${FORESTR_TEST_TMPDIR:-${TMPDIR:-/tmp}} ;;
+esac
+tmp=$(mktemp -d "$test_tmp_root/forestr-manifest.XXXXXX")
+tmp=$(cd "$tmp" && pwd -P)
 trap 'rm -rf "$tmp"' EXIT
 
 repo="$tmp/repo"
+git_bin=/usr/bin/git
+[[ -x $git_bin ]] || git_bin=$(command -v git)
+jq_bin=$(command -v jq)
 mkdir -p "$repo"
 GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.fsmonitor GIT_CONFIG_VALUE_0=false \
-    /usr/bin/git -C "$repo" init -q
+    "$git_bin" -C "$repo" init -q
 
 cat >"$tmp/fzf" <<'EOF'
 #!/usr/bin/env bash
@@ -42,27 +50,31 @@ schema_env=(
     XDG_RUNTIME_DIR="$schema_root/runtime"
 )
 env "${schema_env[@]}" "$schema_herdr" plugin link "$repo_root" --enabled >"$tmp/plugin-link.json"
-/usr/bin/jq -e '
+"$jq_bin" -e '
   .result.plugin
   | .plugin_id == "ludoroo.forestr"
     and .version == "0.1.0"
-    and .platforms == ["linux"]
+    and .platforms == ["linux", "macos"]
     and [.actions[].id] == ["open"]
     and [.actions[].contexts] == [["workspace"]]
     and [.panes[].id] == ["manager"]
     and [.panes[].placement] == ["popup"]
 ' "$tmp/plugin-link.json" >/dev/null
 env "${schema_env[@]}" "$schema_herdr" plugin list --json --plugin ludoroo.forestr >"$tmp/plugin-list.json"
-/usr/bin/jq -e '.result.plugins | length == 1 and .[0].plugin_id == "ludoroo.forestr"' \
+"$jq_bin" -e '.result.plugins | length == 1 and .[0].plugin_id == "ludoroo.forestr"' \
     "$tmp/plugin-list.json" >/dev/null
 
 export TEST_REPO="$repo"
 export HERDR_PLUGIN_ROOT="$repo_root"
-export HERDR_BIN_PATH=/bin/true
+export HERDR_BIN_PATH=/usr/bin/true
 export WORKTRUNK_BIN="$tmp/wt"
 export FZF_BIN="$tmp/fzf"
-export GIT_BIN=/usr/bin/git
-export JQ_BIN=/usr/bin/jq
+export GIT_BIN="$git_bin"
+export JQ_BIN="$jq_bin"
+export FORESTR_BASH_BIN="$BASH"
+mkdir -p "$tmp/plugin-config"
+printf 'backend = "git"\n' >"$tmp/plugin-config/config.toml"
+export HERDR_PLUGIN_CONFIG_DIR="$tmp/plugin-config"
 export GIT_CONFIG_COUNT=1
 export GIT_CONFIG_KEY_0=core.fsmonitor
 export GIT_CONFIG_VALUE_0=false
@@ -78,13 +90,15 @@ with open(f"{root}/herdr-plugin.toml", "rb") as file:
 assert manifest["id"] == "ludoroo.forestr"
 assert manifest["name"] == "Forestr"
 assert manifest["version"] == "0.1.0"
-assert manifest["platforms"] == ["linux"]
+assert manifest["platforms"] == ["linux", "macos"]
 assert [action["id"] for action in manifest["actions"]] == ["open"]
 assert f'{manifest["id"]}.{manifest["actions"][0]["id"]}' == "ludoroo.forestr.open"
 assert [pane["id"] for pane in manifest["panes"]] == ["manager"]
 actions = {action["id"]: action["command"] for action in manifest["actions"]}
 panes = {pane["id"]: pane["command"] for pane in manifest["panes"]}
+assert "$HERDR_PLUGIN_ROOT/src/launch.sh" in " ".join(actions["open"])
 assert "$HERDR_PLUGIN_ROOT/src/open.sh" in " ".join(actions["open"])
+assert "$HERDR_PLUGIN_ROOT/src/launch.sh" in " ".join(panes["manager"])
 assert "$HERDR_PLUGIN_ROOT/src/manager.sh" in " ".join(panes["manager"])
 assert "tab" not in " ".join(panes["manager"])
 subprocess.run(panes["manager"], cwd=os.environ["TEST_REPO"], env=os.environ, check=True)
