@@ -38,10 +38,10 @@ dispatch() { backend_dispatch "$1"; }
 assert_ok() { "$JQ_BIN" -e '.ok == true' >/dev/null <<<"$1" || fail "expected success: $1"; }
 assert_fail() { "$JQ_BIN" -e '.ok == false and (.message|length>0)' >/dev/null <<<"$1" || fail "expected failure: $1"; }
 
-# Capability contract is complete and requires neither Worktrunk nor timeout.
+# Capability contract is complete and requires no optional backend executable.
 "$JQ_BIN" -e '.backend == "git" and .operations.open and .operations.create and .operations.remove
   and (.operations.enrich|not) and (.features.create_clobber|not) and .features.remove_stale
-  and (.features.relocate|not) and (.dependencies.wt|not) and (.dependencies.gnu_timeout|not)' \
+  and (.features.relocate|not) and .dependencies == {wt:false}' \
   <<<"$(backend_capabilities)" >/dev/null
 
 # Worktrunk sanitize fixtures: Git-valid branch slashes become hyphens and all
@@ -339,8 +339,8 @@ result=$(dispatch "$(remove_request "$remove_repo" "$stale" "$stale" true)"); as
 ! "$FORESTR_GIT_BIN" -C "$remove_repo" worktree list --porcelain | grep -Fq "$stale"
 ! "$FORESTR_GIT_BIN" -C "$remove_repo" show-ref --verify --quiet refs/heads/stale
 
-# Manager capability behavior is backend-driven: explicit Git needs neither wt
-# nor timeout, labels the popup, and keeps C as a source-only error action.
+# Manager capability behavior is backend-driven: explicit Git does not invoke
+# wt, labels the popup, and keeps C as a source-only error action.
 manager_bin="$tmp/manager-bin"; manager_config="$tmp/manager-config"
 mkdir -p "$manager_bin" "$manager_config"
 printf 'backend = "git"\n' >"$manager_config/config.toml"
@@ -358,11 +358,6 @@ cat >"$manager_bin/wt" <<'EOF_WT'
 printf 'wt invoked\n' >>"$TEST_FORBIDDEN_PROCESSES"
 exit 97
 EOF_WT
-cat >"$manager_bin/timeout" <<'EOF_TIMEOUT'
-#!/usr/bin/env bash
-printf 'timeout invoked\n' >>"$TEST_FORBIDDEN_PROCESSES"
-exit 98
-EOF_TIMEOUT
 chmod +x "$manager_bin"/*
 : >"$tmp/forbidden-processes"
 
@@ -381,7 +376,7 @@ no_stale_payload=$("$JQ_BIN" -cn --arg root "$remove_repo" --arg path "$no_stale
     '{kind:"worktree",target:"no-stale-capability",path:$path,repo_root:$root,repo_name:"removals"}' | base64 | tr -d '\n')
 if HERDR_PLUGIN_ROOT="$no_stale_plugin" HERDR_PLUGIN_CONFIG_DIR="$manager_config" \
     HERDR_BIN_PATH="$manager_bin/herdr" FZF_BIN="$manager_bin/fzf" GIT_BIN="$FORESTR_GIT_BIN" JQ_BIN="$JQ_BIN" \
-    WORKTRUNK_BIN="$manager_bin/wt" TIMEOUT_BIN="$tmp/missing-timeout" ACTIVE_REPO_ROOT="$remove_repo" \
+    WORKTRUNK_BIN="$manager_bin/wt" ACTIVE_REPO_ROOT="$remove_repo" \
     MANAGER_SOURCE_CHECKOUT_PATH="$remove_repo" TEST_FORBIDDEN_PROCESSES="$tmp/forbidden-processes" \
     bash "$no_stale_plugin/manager.sh" __remove "$no_stale_state" "$no_stale_payload" false; then
     fail 'backend without stale capability accepted a missing path'
@@ -392,7 +387,7 @@ grep -Fq 'cannot safely remove a missing or prunable worktree path' "$no_stale_s
 
 HERDR_PLUGIN_ROOT="$repo_root" HERDR_PLUGIN_CONFIG_DIR="$manager_config" \
 HERDR_BIN_PATH="$manager_bin/herdr" FZF_BIN="$manager_bin/fzf" GIT_BIN="$FORESTR_GIT_BIN" JQ_BIN="$JQ_BIN" \
-WORKTRUNK_BIN="$manager_bin/wt" TIMEOUT_BIN="$tmp/missing-timeout" ACTIVE_REPO_ROOT="$remove_repo" \
+WORKTRUNK_BIN="$manager_bin/wt" ACTIVE_REPO_ROOT="$remove_repo" \
 MANAGER_SOURCE_CHECKOUT_PATH="$remove_repo" TEST_MANAGER_ARGS="$tmp/manager-args" \
 TEST_MANAGER_ROWS="$tmp/manager-rows" TEST_FORBIDDEN_PROCESSES="$tmp/forbidden-processes" \
 bash "$plugin_root/manager.sh" </dev/null
@@ -407,7 +402,7 @@ main_payload=$("$JQ_BIN" -cn --arg root "$remove_repo" \
     >"$manager_state/repository"
 if HERDR_PLUGIN_ROOT="$repo_root" HERDR_PLUGIN_CONFIG_DIR="$manager_config" \
     HERDR_BIN_PATH="$manager_bin/herdr" FZF_BIN="$manager_bin/fzf" GIT_BIN="$FORESTR_GIT_BIN" JQ_BIN="$JQ_BIN" \
-    WORKTRUNK_BIN="$manager_bin/wt" TIMEOUT_BIN="$tmp/missing-timeout" \
+    WORKTRUNK_BIN="$manager_bin/wt" \
     bash "$plugin_root/manager.sh" __new-mode "$manager_state" true; then
     fail 'Git clobber input transition succeeded'
 fi
@@ -434,7 +429,7 @@ chmod +x "$tmp/git-manager-post-verify"
 printf 'source\n' >"$manager_state/mode"; printf 'local\n' >"$manager_state/scope"
 if HERDR_PLUGIN_ROOT="$repo_root" HERDR_PLUGIN_CONFIG_DIR="$manager_config" \
     HERDR_BIN_PATH="$manager_bin/herdr" FZF_BIN="$manager_bin/fzf" GIT_BIN="$tmp/git-manager-post-verify" JQ_BIN="$JQ_BIN" \
-    WORKTRUNK_BIN="$manager_bin/wt" TIMEOUT_BIN="$tmp/missing-timeout" ACTIVE_REPO_ROOT="$remove_repo" \
+    WORKTRUNK_BIN="$manager_bin/wt" ACTIVE_REPO_ROOT="$remove_repo" \
     MANAGER_SOURCE_CHECKOUT_PATH="$remove_repo" TEST_FORBIDDEN_PROCESSES="$tmp/forbidden-processes" \
     bash "$plugin_root/manager.sh" __open "$manager_state" "$partial_payload" ''; then
     fail 'post-verification open unexpectedly succeeded'
@@ -444,7 +439,7 @@ grep -Fq 'checkout retained for inspection' "$manager_state/error"
 [[ $(cat "$manager_state/mode") == source ]]
 HERDR_PLUGIN_ROOT="$repo_root" HERDR_PLUGIN_CONFIG_DIR="$manager_config" \
     HERDR_BIN_PATH="$manager_bin/herdr" FZF_BIN="$manager_bin/fzf" GIT_BIN="$FORESTR_GIT_BIN" JQ_BIN="$JQ_BIN" \
-    WORKTRUNK_BIN="$manager_bin/wt" TIMEOUT_BIN="$tmp/missing-timeout" \
+    WORKTRUNK_BIN="$manager_bin/wt" \
     bash "$plugin_root/manager.sh" __rows "$manager_state" >"$tmp/partial-source-rows"
 ! grep -Fq 'manager-partial' "$tmp/partial-source-rows"
 "$FORESTR_GIT_BIN" -C "$remove_repo" worktree remove --force "$partial_path"
@@ -457,7 +452,7 @@ warning_payload=$("$JQ_BIN" -cn --arg root "$remove_repo" --arg path "$warning_p
     '{kind:"worktree",target:"manager-warning",path:$path,repo_root:$root,repo_name:"removals"}' | base64 | tr -d '\n')
 HERDR_PLUGIN_ROOT="$repo_root" HERDR_PLUGIN_CONFIG_DIR="$manager_config" \
 HERDR_BIN_PATH="$manager_bin/herdr" FZF_BIN="$manager_bin/fzf" GIT_BIN="$FORESTR_GIT_BIN" JQ_BIN="$JQ_BIN" \
-WORKTRUNK_BIN="$manager_bin/wt" TIMEOUT_BIN="$tmp/missing-timeout" ACTIVE_REPO_ROOT="$remove_repo" \
+WORKTRUNK_BIN="$manager_bin/wt" ACTIVE_REPO_ROOT="$remove_repo" \
 MANAGER_SOURCE_CHECKOUT_PATH="$remove_repo" TEST_FORBIDDEN_PROCESSES="$tmp/forbidden-processes" \
 bash "$plugin_root/manager.sh" __remove "$manager_state" "$warning_payload" false
 [[ ! -e $warning_path ]]
@@ -471,7 +466,7 @@ removed_snapshot="$manager_state/snapshot.$removed_generation"
 ! grep -Fq "$warning_path" "$removed_snapshot"
 if HERDR_PLUGIN_ROOT="$repo_root" HERDR_PLUGIN_CONFIG_DIR="$manager_config" \
     HERDR_BIN_PATH="$manager_bin/herdr" FZF_BIN="$manager_bin/fzf" GIT_BIN="$FORESTR_GIT_BIN" JQ_BIN="$JQ_BIN" \
-    WORKTRUNK_BIN="$manager_bin/wt" TIMEOUT_BIN="$tmp/missing-timeout" ACTIVE_REPO_ROOT="$remove_repo" \
+    WORKTRUNK_BIN="$manager_bin/wt" ACTIVE_REPO_ROOT="$remove_repo" \
     MANAGER_SOURCE_CHECKOUT_PATH="$remove_repo" TEST_FORBIDDEN_PROCESSES="$tmp/forbidden-processes" \
     bash "$plugin_root/manager.sh" __open "$manager_state" "$warning_payload" ''; then
     fail 'stale removed row reopened its retained branch'

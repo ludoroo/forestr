@@ -19,10 +19,9 @@ create_scope = "local"
 # normal switch/create behavior.
 create_base = ""
 
-# Worktrunk-only display enrichment. GNU timeout is required only when this is
-# true and Worktrunk is selected. Concurrency accepts 1 or 2.
+# Worktrunk-only display enrichment. The collection timeout is passed directly
+# to Worktrunk's built-in list.timeout-ms setting. Concurrency accepts 1 or 2.
 enrich_backend = true
-worktrunk_enrichment_timeout_ms = 10000
 worktrunk_enrichment_collection_timeout_ms = 5000
 worktrunk_enrichment_concurrency = 2
 

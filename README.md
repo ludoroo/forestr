@@ -24,16 +24,13 @@ Forestr supports **Linux and macOS** and requires:
 Optional backend tooling:
 
 - [Worktrunk](https://worktrunk.dev/) (`wt`) enables the Worktrunk backend, including clobber-create, relocation-aware operations, and richer status symbols.
-- GNU `timeout` (normally supplied by `coreutils`) is required only when Worktrunk status enrichment is enabled. Enrichment defaults to on when `wt` is found; install `coreutils` or set `enrich_backend = false`. The utility must support `--signal` and `--kill-after`; Homebrew's `gtimeout` name is detected automatically.
 
-Forestr searches common executable locations, including Apple Silicon and Intel Homebrew prefixes. Explicit `BASH_BIN`, `HERDR_BIN`, `FZF_BIN`, `GIT_BIN`, `JQ_BIN`, `CURL_BIN`, `WORKTRUNK_BIN`, and `TIMEOUT_BIN` overrides are also supported. Because fzf accepts its shell as a whitespace-split command, the Bash executable path must not contain whitespace or shell metacharacters.
+Forestr searches common executable locations, including Apple Silicon and Intel Homebrew prefixes. Explicit `BASH_BIN`, `HERDR_BIN`, `FZF_BIN`, `GIT_BIN`, `JQ_BIN`, `CURL_BIN`, and `WORKTRUNK_BIN` overrides are also supported. Because fzf accepts its shell as a whitespace-split command, the Bash executable path must not contain whitespace or shell metacharacters.
 
 On macOS, install the non-system runtime dependencies with:
 
 ```bash
 brew install bash jq fzf
-# Optional: required for Worktrunk status enrichment
-brew install coreutils
 ```
 
 ## Install
@@ -80,7 +77,9 @@ The create wizard is repository-first: choose a repository, then choose an exist
 `backend = "auto"` is the default. It selects Worktrunk when an executable `wt` is available and otherwise uses native Git. Set `backend = "git"` or `backend = "worktrunk"` to make selection explicit.
 
 - **Git:** uses Git porcelain directly. It opens existing worktrees, materializes exact local or remote branches, creates new branches, and removes selected secondary worktrees. New checkout paths are siblings of the primary checkout, named `.<repository>-<sanitized-branch>`.
-- **Worktrunk:** delegates switch/create/remove semantics to `wt`. Enrichment adds Worktrunk head and status symbols in the background. It is bounded by collection and overall timeouts and can be disabled with `enrich_backend = false`.
+- **Worktrunk:** delegates switch/create/remove semantics to `wt`. Enrichment adds Worktrunk head and status symbols in the background and passes its collection budget to Worktrunk's built-in `list.timeout-ms` setting. It can be disabled with `enrich_backend = false`.
+
+The budget covers Worktrunk's collection phase. If broader `wt list` setup stalls, the existing Git rows remain usable; refreshing or closing the popup terminates the background producer.
 
 The initial active-repository row is rendered before global Herdr discovery finishes. Refresh work is generation-scoped, and stale background output cannot replace a newer snapshot.
 

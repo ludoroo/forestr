@@ -8,7 +8,7 @@ backend_worktrunk_failure() {
 
 backend_adapter_dispatch() {
     local request=$1 operation repo_root target mode force raw path branch
-    local collection_timeout_ms timeout_ms external_timeout timeout_bin
+    local collection_timeout_ms
     local -a args
     operation=$($JQ_BIN -r '.operation' <<<"$request")
     repo_root=$($JQ_BIN -r '.repo_root' <<<"$request")
@@ -52,11 +52,7 @@ backend_adapter_dispatch() {
             ;;
         enrich)
             collection_timeout_ms=$($JQ_BIN -r '.collection_timeout_ms' <<<"$request")
-            timeout_ms=$($JQ_BIN -r '.timeout_ms' <<<"$request")
-            timeout_bin=$($JQ_BIN -r '.timeout_bin' <<<"$request")
-            printf -v external_timeout '%d.%03d' "$((timeout_ms / 1000))" "$((timeout_ms % 1000))"
-            if ! raw=$("$timeout_bin" --signal=TERM --kill-after=0.250s "${external_timeout}s" \
-                "$FORESTR_WORKTRUNK_BIN" -C "$repo_root" list --format=json \
+            if ! raw=$("$FORESTR_WORKTRUNK_BIN" -C "$repo_root" list --format=json \
                 --config-set 'list.json-schema=2' --config-set 'list.full=false' \
                 --config-set "list.timeout-ms=$collection_timeout_ms" 2>/dev/null); then
                 backend_worktrunk_failure enrich 'Worktrunk enrichment failed.'

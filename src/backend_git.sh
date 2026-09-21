@@ -6,12 +6,11 @@
 backend_git_resolve() {
     FORESTR_WORKTRUNK_BIN=
     FORESTR_BACKEND_ENRICH=false
-    FORESTR_BACKEND_CONFIG_WARNING=
     FORESTR_BACKEND_CAPABILITIES=$($JQ_BIN -cn '
         {version:1,backend:"git",
          operations:{open:true,create:true,remove:true,enrich:false},
          features:{create_clobber:false,remove_stale:true,relocate:false},
-         dependencies:{wt:false,gnu_timeout:false}}')
+         dependencies:{wt:false}}')
 }
 
 backend_git_failure() {

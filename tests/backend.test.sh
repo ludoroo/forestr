@@ -39,14 +39,7 @@ backend_resolve "$tmp/bin/wt"
 [[ $FORESTR_BACKEND == worktrunk ]]
 "$JQ_BIN" -e '.version == 1 and .backend == "worktrunk"
   and .operations.open and .operations.create and .operations.remove and .operations.enrich
-  and .dependencies.wt == true and .dependencies.gnu_timeout == true' \
-  <<<"$(backend_capabilities)" >/dev/null
-
-# GNU timeout is capability-scoped to enabled Worktrunk enrichment.
-printf '%s\n' 'backend = "worktrunk"' 'enrich_backend = false' >"$tmp/config/config.toml"
-forestr_reset_config_cache
-backend_resolve "$tmp/bin/wt"
-"$JQ_BIN" -e '.dependencies.gnu_timeout == false' <<<"$(backend_capabilities)" >/dev/null
+  and .dependencies == {wt:true}' <<<"$(backend_capabilities)" >/dev/null
 
 write_config worktrunk
 if backend_resolve "$tmp/missing-wt" >"$tmp/out" 2>"$tmp/error"; then
@@ -60,7 +53,7 @@ forestr_find_executable() { return 1; }
 backend_resolve
 [[ $FORESTR_BACKEND == git && -z $FORESTR_WORKTRUNK_BIN ]]
 "$JQ_BIN" -e '.backend == "git" and .operations.open and (.operations.enrich|not)
-  and (.dependencies.wt|not) and (.dependencies.gnu_timeout|not)' <<<"$(backend_capabilities)" >/dev/null
+  and .dependencies == {wt:false}' <<<"$(backend_capabilities)" >/dev/null
 eval "$find_executable_definition"
 
 # Explicit Git does not even ask executable resolution for wt.

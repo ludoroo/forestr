@@ -46,23 +46,8 @@ if [[ $bash_q != "$bash_bin" ]]; then
 fi
 export FORESTR_BASH_BIN=$bash_bin
 backend_resolve "${WORKTRUNK_BIN:-}" || exit $?
-timeout_bin=
-if [[ $($jq_bin -r '.dependencies.gnu_timeout' <<<"$(backend_capabilities)") == true ]]; then
-    if [[ -n ${TIMEOUT_BIN:-} && ! -x ${TIMEOUT_BIN:-} ]]; then
-        printf 'Forestr timeout override is not executable: %s\n' "$TIMEOUT_BIN" >&2
-        exit 127
-    fi
-    if ! timeout_bin=$(forestr_find_timeout "${TIMEOUT_BIN:-}"); then
-        printf 'Forestr backend enrichment requires GNU timeout; install coreutils or set TIMEOUT_BIN.\n' >&2
-        exit 127
-    fi
-fi
 
 verify_runtime_tools() {
-    if [[ -n $timeout_bin ]] && ! "$timeout_bin" --help 2>&1 | grep -q -- '--kill-after'; then
-        printf 'Forestr backend enrichment requires GNU-compatible timeout with --signal and --kill-after support (TIMEOUT_BIN=%s).\n' "$timeout_bin" >&2
-        return 1
-    fi
     if ! "$curl_bin" --help all 2>&1 | grep -q -- '--unix-socket'; then
         printf 'Forestr requires curl with Unix-socket support (CURL_BIN=%s).\n' "$curl_bin" >&2
         return 1
@@ -82,10 +67,8 @@ backend_capabilities_json=$(backend_capabilities)
 backend_create_clobber=$($jq_bin -r '.features.create_clobber // false' <<<"$backend_capabilities_json")
 backend_remove_stale=$($jq_bin -r '.features.remove_stale // false' <<<"$backend_capabilities_json")
 enrich_backend=$FORESTR_BACKEND_ENRICH
-enrichment_timeout_ms=$FORESTR_BACKEND_ENRICHMENT_TIMEOUT_MS
 enrichment_collection_timeout_ms=$FORESTR_BACKEND_ENRICHMENT_COLLECTION_TIMEOUT_MS
 enrichment_concurrency=$FORESTR_BACKEND_ENRICHMENT_CONCURRENCY
-config_warning=$FORESTR_BACKEND_CONFIG_WARNING
 
 pause_after_error() {
     # Worker actions run with no terminal. Only offer an interactive pause when
@@ -396,7 +379,6 @@ reset_generation_warnings() {
     local file
     file=$(generation_warnings_file "$1" "$2")
     : >"$file"
-    [[ -z $config_warning ]] || printf '%s\n' "$config_warning" >>"$file"
 }
 
 append_generation_warning() {
@@ -696,11 +678,10 @@ produce_manage_layers() {
         [[ -n $record && $(current_generation "$state_dir") == "$generation" ]] || continue
         result=$(mktemp "$state_dir/backend.$generation.XXXXXX")
         repo_root=$("$jq_bin" -Rnr --arg r "$record" '$r|@base64d|fromjson|.repo_root')
-        request=$("$jq_bin" -cn --arg repo_root "$repo_root" --arg timeout_bin "$timeout_bin" \
-            --argjson timeout_ms "$enrichment_timeout_ms" \
+        request=$("$jq_bin" -cn --arg repo_root "$repo_root" \
             --argjson collection_timeout_ms "$enrichment_collection_timeout_ms" \
-            '{version:1,operation:"enrich",repo_root:$repo_root,timeout_bin:$timeout_bin,
-              timeout_ms:$timeout_ms,collection_timeout_ms:$collection_timeout_ms}')
+            '{version:1,operation:"enrich",repo_root:$repo_root,
+              collection_timeout_ms:$collection_timeout_ms}')
         backend_dispatch "$request" >"$result" 2>/dev/null &
         batch_records+=("$record"); batch_results+=("$result"); batch_pids+=("$!")
         [[ ${#batch_pids[@]} -lt $enrichment_concurrency ]] || run_enrichment_batch
@@ -1033,7 +1014,6 @@ case ${1:-} in
             background_rows "$state_dir" "$(current_generation "$state_dir")"
         else
             : >"$state_dir/warnings"
-            [[ -z $config_warning ]] || printf '%s\n' "$config_warning" >>"$state_dir/warnings"
             manage_rows "$state_dir/warnings"
         fi
         exit 0

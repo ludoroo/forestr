@@ -44,20 +44,17 @@ forestr_reset_config_cache
 
 # Enrichment controls are bounded and reject malformed values.
 [[ $(forestr_config_bool enrich_backend true) == true ]]
-[[ $(forestr_config_positive_integer worktrunk_enrichment_timeout_ms 10000) == 10000 ]]
 [[ $(forestr_config_positive_integer worktrunk_enrichment_collection_timeout_ms 5000) == 5000 ]]
 [[ $(forestr_config_concurrency worktrunk_enrichment_concurrency 2) == 2 ]]
-printf '%s\n' 'enrich_backend = false' 'worktrunk_enrichment_timeout_ms = 900' \
+printf '%s\n' 'enrich_backend = false' \
     'worktrunk_enrichment_collection_timeout_ms = 400' 'worktrunk_enrichment_concurrency = 1' >>"$tmp/config/config.toml"
 forestr_reset_config_cache
 [[ $(forestr_config_bool enrich_backend true) == false ]]
-[[ $(forestr_config_positive_integer worktrunk_enrichment_timeout_ms 10000) == 900 ]]
 [[ $(forestr_config_positive_integer worktrunk_enrichment_collection_timeout_ms 5000) == 400 ]]
 [[ $(forestr_config_concurrency worktrunk_enrichment_concurrency 2) == 1 ]]
-printf '%s\n' 'worktrunk_enrichment_timeout_ms = 0' 'worktrunk_enrichment_collection_timeout_ms = nope' \
+printf '%s\n' 'worktrunk_enrichment_collection_timeout_ms = nope' \
     'worktrunk_enrichment_concurrency = 9' >>"$tmp/config/config.toml"
 forestr_reset_config_cache
-[[ $(forestr_config_positive_integer worktrunk_enrichment_timeout_ms 10000) == 10000 ]]
 [[ $(forestr_config_positive_integer worktrunk_enrichment_collection_timeout_ms 5000) == 5000 ]]
 [[ $(forestr_config_concurrency worktrunk_enrichment_concurrency 2) == 2 ]]
 
@@ -74,7 +71,7 @@ old_path=$PATH; PATH="$tmp:$PATH"
 forestr_reset_config_cache
 forestr_load_config
 forestr_config_bool enrich_backend true >/dev/null
-forestr_config_positive_integer worktrunk_enrichment_timeout_ms 10000 >/dev/null
+forestr_config_positive_integer worktrunk_enrichment_collection_timeout_ms 5000 >/dev/null
 forestr_key key_down j >/dev/null
 [[ $(wc -l <"$TEST_SED_CALLS") -eq 1 ]]
 PATH=$old_path
@@ -102,29 +99,5 @@ exit 0
 EOF
 chmod +x "$tmp/tool"
 [[ $(forestr_find_executable tool "$tmp/tool") == "$tmp/tool" ]]
-[[ $(forestr_find_timeout "$tmp/tool") == "$tmp/tool" ]]
-if forestr_find_timeout "$tmp/missing" >/dev/null 2>&1; then
-    printf 'invalid timeout override was accepted\n' >&2
-    exit 1
-fi
-(
-    forestr_find_executable() {
-        case $1 in timeout) printf '/mock/timeout\n' ;; *) return 1 ;; esac
-    }
-    [[ $(forestr_find_timeout) == /mock/timeout ]]
-)
-(
-    forestr_find_executable() {
-        case $1 in gtimeout) printf '/mock/gtimeout\n' ;; *) return 1 ;; esac
-    }
-    [[ $(forestr_find_timeout) == /mock/gtimeout ]]
-)
-(
-    forestr_find_executable() { return 1; }
-    if forestr_find_timeout >/dev/null 2>&1; then
-        printf 'missing timeout utility was accepted\n' >&2
-        exit 1
-    fi
-)
 
 printf 'lib tests passed\n'

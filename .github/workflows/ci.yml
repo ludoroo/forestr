@@ -19,7 +19,7 @@ jobs:
       - name: Install Linux runtime requirements
         run: |
           sudo apt-get update
-          sudo apt-get install --yes bash git jq curl coreutils python3 ca-certificates procps
+          sudo apt-get install --yes bash git jq curl python3 ca-certificates procps
 
       - name: Install Herdr 0.9+
         env:
@@ -59,10 +59,8 @@ jobs:
           fzf --help | grep -q -- '--footer-border'
           printf 'row\n' | fzf --filter=row --bind='start:transform:echo noop' >/dev/null
 
-      - name: Verify curl and timeout capabilities
-        run: |
-          curl --help all | grep -q -- '--unix-socket'
-          timeout --help | grep -q -- '--kill-after'
+      - name: Verify curl capabilities
+        run: curl --help all | grep -q -- '--unix-socket'
 
       - name: Run repository checks
         run: ./test.sh
@@ -84,7 +82,7 @@ jobs:
           persist-credentials: false
 
       - name: Install macOS runtime requirements
-        run: brew install bash coreutils fzf jq python
+        run: brew install bash fzf jq python
 
       - name: Install Herdr 0.9+
         env:
@@ -114,9 +112,6 @@ jobs:
           "$brew_bash" --version | head -n1
           test "$("$brew_bash" -c 'printf %s "${BASH_VERSINFO[0]}"')" -ge 4
           curl --help all | grep -q -- '--unix-socket'
-          gtimeout --help | grep -q -- '--kill-after'
-          PATH="$(brew --prefix)/bin:$PATH" "$brew_bash" -c \
-            'source src/lib.sh; test "$(forestr_find_timeout)" = "$(command -v gtimeout)"'
           fzf --help | grep -q -- '--listen-unsafe'
 
       - name: Run repository checks

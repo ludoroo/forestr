@@ -63,23 +63,6 @@ forestr_find_executable() {
     return 1
 }
 
-forestr_find_timeout() {
-    local override=${1:-} candidate
-
-    if [[ -n $override ]]; then
-        [[ -x $override ]] || return 1
-        printf '%s\n' "$override"
-        return 0
-    fi
-    for candidate in timeout gtimeout; do
-        if candidate=$(forestr_find_executable "$candidate"); then
-            printf '%s\n' "$candidate"
-            return 0
-        fi
-    done
-    return 1
-}
-
 forestr_context_value() {
     local key=$1 context=${HERDR_PLUGIN_CONTEXT_JSON:-}
     [[ -n $context ]] || context='{}'

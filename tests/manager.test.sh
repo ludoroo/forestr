@@ -166,36 +166,7 @@ if [[ " $* " == *' worktree list '* ]]; then
 fi
 exec "$TEST_REAL_GIT" "$@"
 EOF
-cat >"$tmp/timeout" <<'EOF'
-#!/usr/bin/env python3
-import os
-import signal
-import subprocess
-import sys
-
-args = sys.argv[1:]
-if args == ["--help"]:
-    print("--signal --kill-after")
-    raise SystemExit(0)
-kill_after = 0.25
-while args and args[0].startswith("--"):
-    option = args.pop(0)
-    if option.startswith("--kill-after="):
-        kill_after = float(option.split("=", 1)[1].removesuffix("s"))
-seconds = float(args.pop(0).removesuffix("s"))
-process = subprocess.Popen(args, start_new_session=True)
-try:
-    raise SystemExit(process.wait(timeout=seconds))
-except subprocess.TimeoutExpired:
-    os.killpg(process.pid, signal.SIGTERM)
-    try:
-        process.wait(timeout=kill_after)
-    except subprocess.TimeoutExpired:
-        os.killpg(process.pid, signal.SIGKILL)
-        process.wait()
-    raise SystemExit(124)
-EOF
-chmod +x "$tmp/herdr" "$tmp/wt" "$tmp/fzf" "$tmp/git" "$tmp/timeout"
+chmod +x "$tmp/herdr" "$tmp/wt" "$tmp/fzf" "$tmp/git"
 
 export TEST_CAPTURE="$tmp/calls"
 export TEST_FZF_CALLS="$tmp/fzf-calls"
@@ -213,7 +184,7 @@ printf 'backend = "worktrunk"\n' >"$tmp/config/config.toml"
 export HERDR_PLUGIN_CONFIG_DIR="$tmp/config"
 export HERDR_BIN_PATH="$tmp/herdr" WORKTRUNK_BIN="$tmp/wt" FZF_BIN="$tmp/fzf"
 export GIT_BIN="$git_bin" JQ_BIN="$jq_bin"
-export TEST_REAL_GIT="$git_bin" TIMEOUT_BIN="$tmp/timeout"
+export TEST_REAL_GIT="$git_bin"
 export FZF_API_KEY='must-not-reach-fzf'
 export ACTIVE_REPO_ROOT="$repo_a"
 export MANAGER_SOURCE_WORKSPACE_ID=w2
@@ -520,50 +491,26 @@ grep -Fq 'locked' "$layer_snapshot"           # Git topology remains
 grep -Fq 'wt <-C>' "$TEST_CAPTURE"
 grep -Fq '<--config-set> <list.json-schema=2>' "$TEST_CAPTURE"
 grep -Fq '<--config-set> <list.full=false>' "$TEST_CAPTURE"
+grep -Fq '<--config-set> <list.timeout-ms=5000>' "$TEST_CAPTURE"
 ! grep -Eq 'wt .*<--branches>|wt .*<--remotes>' "$TEST_CAPTURE"
 [[ ! -e $layer_state/producer.pid ]]
 export GIT_BIN="$git_bin"
 
-# A real external timeout surrounds Worktrunk's own collection budget. Failure
-# leaves the already-published Git skeleton intact instead of blanking rows.
-timeout_config="$tmp/timeout-config"; mkdir -p "$timeout_config"
-cat >"$timeout_config/config.toml" <<'EOF'
-enrich_backend = true
-worktrunk_enrichment_timeout_ms = 100
-worktrunk_enrichment_collection_timeout_ms = 50
-worktrunk_enrichment_concurrency = 2
-EOF
-timeout_state="$tmp/timeout-state"; new_state "$timeout_state"; printf '0\n' >"$timeout_state/generation"
-export HERDR_PLUGIN_CONFIG_DIR="$timeout_config" TEST_WT_LIST_DELAY=1
-bash "$plugin_root/manager.sh" __refresh "$timeout_state"
-timeout_generation=$(cat "$timeout_state/generation")
-for _ in {1..500}; do [[ -e $timeout_state/completed.$timeout_generation ]] && break; sleep 0.02; done
-[[ -e $timeout_state/completed.$timeout_generation ]]
-timeout_snapshot="$timeout_state/snapshot.$timeout_generation"
-grep -Fq '(detached HEAD)' "$timeout_snapshot"
-! grep -Fq 'enriched2' "$timeout_snapshot"
-[[ $(grep -Fc "$feature_a" "$timeout_snapshot") -eq 1 ]]
-unset HERDR_PLUGIN_CONFIG_DIR TEST_WT_LIST_DELAY
+# Failed enrichment leaves the already-published Git skeleton intact.
+failure_state="$tmp/failure-state"; new_state "$failure_state"; printf '0\n' >"$failure_state/generation"
+export TEST_WT_LIST_FAIL=true
+bash "$plugin_root/manager.sh" __refresh "$failure_state"
+failure_generation=$(cat "$failure_state/generation")
+for _ in {1..500}; do [[ -e $failure_state/completed.$failure_generation ]] && break; sleep 0.02; done
+[[ -e $failure_state/completed.$failure_generation ]]
+failure_snapshot="$failure_state/snapshot.$failure_generation"
+grep -Fq '(detached HEAD)' "$failure_snapshot"
+! grep -Fq 'enriched2' "$failure_snapshot"
+[[ $(grep -Fc "$feature_a" "$failure_snapshot") -eq 1 ]]
+unset TEST_WT_LIST_FAIL
 
-# An impossible configured budget is called out and reset to safe defaults.
-invalid_budget_config="$tmp/invalid-budget-config"; mkdir -p "$invalid_budget_config"
-cat >"$invalid_budget_config/config.toml" <<'EOF'
-enrich_backend = true
-worktrunk_enrichment_timeout_ms = 100
-worktrunk_enrichment_collection_timeout_ms = 500
-worktrunk_enrichment_concurrency = 1
-EOF
-invalid_budget_state="$tmp/invalid-budget-state"; new_state "$invalid_budget_state"; printf '0\n' >"$invalid_budget_state/generation"
-export HERDR_PLUGIN_CONFIG_DIR="$invalid_budget_config" MANAGER_BACKGROUND_NOTIFY=false
-: >"$TEST_CAPTURE"
-bash "$plugin_root/manager.sh" __refresh "$invalid_budget_state"
-for _ in {1..500}; do [[ -e $invalid_budget_state/completed.1 ]] && break; sleep 0.02; done
-grep -Fq 'must be >= worktrunk_enrichment_collection_timeout_ms' "$invalid_budget_state/warnings.1"
-grep -Fq '<list.timeout-ms=5000>' "$TEST_CAPTURE"
-unset HERDR_PLUGIN_CONFIG_DIR MANAGER_BACKGROUND_NOTIFY
-
-# Refresh terminates the whole producer process group, including timeout and
-# Worktrunk descendants, before starting the replacement generation.
+# Refresh terminates the whole producer process group, including Worktrunk
+# descendants, before starting the replacement generation.
 descendant_state="$tmp/descendant-state"; new_state "$descendant_state"; printf '0\n' >"$descendant_state/generation"
 export TEST_WT_LIST_DELAY=30 TEST_WT_PID_FILE="$tmp/wt-descendant-pid" MANAGER_BACKGROUND_NOTIFY=false
 bash "$plugin_root/manager.sh" __refresh "$descendant_state"
@@ -971,16 +918,6 @@ bash "$plugin_root/manager.sh" __rows "$non_git_state" >"$tmp/non-git-repositori
 grep -Fq "$repo_a" "$tmp/non-git-repositories"
 grep -Fq "$repo_b" "$tmp/non-git-repositories"
 export ACTIVE_REPO_ROOT="$repo_a" MANAGER_SOURCE_CHECKOUT_PATH="$feature_a"
-
-# Missing explicit dependency overrides fail with an actionable startup error.
-if TIMEOUT_BIN="$tmp/not-executable" bash "$plugin_root/manager.sh" __rows "$state" 2>"$tmp/dependency-error"; then
-    printf 'missing timeout override was accepted\n' >&2; exit 1
-fi
-grep -Fq 'timeout override is not executable' "$tmp/dependency-error"
-no_enrich_config="$tmp/no-enrich-config"; mkdir -p "$no_enrich_config"
-printf '%s\n' 'backend = "worktrunk"' 'enrich_backend = false' >"$no_enrich_config/config.toml"
-HERDR_PLUGIN_CONFIG_DIR="$no_enrich_config" TIMEOUT_BIN="$tmp/not-executable" \
-    bash "$plugin_root/manager.sh" __rows "$state" >/dev/null
 
 # fzf failures are surfaced, and signals promptly cancel a producer that cannot
 # finish naturally within the assertion window before removing its state dir.

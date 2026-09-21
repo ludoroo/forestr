@@ -22,14 +22,8 @@ case " $* " in
   *) printf '{"path":"/repo/.topic","branch":"topic"}\n' ;;
 esac
 EOF
-cat >"$tmp/timeout" <<'EOF'
-#!/usr/bin/env bash
-printf '%s\0' "$@" >"$TEST_TIMEOUT_ARGS"
-while [[ $1 == --* || $1 == *s ]]; do shift; done
-exec "$@"
-EOF
-chmod +x "$tmp/wt" "$tmp/timeout"
-export FORESTR_WORKTRUNK_BIN="$tmp/wt" TEST_ARGS="$tmp/args" TEST_TIMEOUT_ARGS="$tmp/timeout-args"
+chmod +x "$tmp/wt"
+export FORESTR_WORKTRUNK_BIN="$tmp/wt" TEST_ARGS="$tmp/args"
 args() { tr '\0' '\n' <"$1"; }
 request() { "$JQ_BIN" -cn --arg operation "$1" --arg mode "${2:-open}" --argjson force "${3:-false}" \
   '{version:1,operation:$operation,repo_root:"/repo",target:"topic",mode:$mode,force:$force}'; }
@@ -50,12 +44,10 @@ backend_dispatch "$(request remove open false)" >/dev/null
 backend_dispatch "$(request remove open true)" >/dev/null
 [[ $(args "$tmp/args" | paste -s -d ' ' -) == '-C /repo remove --foreground --format=json --force --force-delete topic' ]]
 
-result=$(backend_dispatch "$($JQ_BIN -cn --arg timeout "$tmp/timeout" \
-  '{version:1,operation:"enrich",repo_root:"/repo",timeout_bin:$timeout,timeout_ms:10000,collection_timeout_ms:5000}')")
+result=$(backend_dispatch "$($JQ_BIN -cn \
+  '{version:1,operation:"enrich",repo_root:"/repo",collection_timeout_ms:5000}')")
 "$JQ_BIN" -e '.ok and .items == [{path:"/repo/.topic",branch:"topic",head:"abc123",symbols:"!↑"}]' <<<"$result" >/dev/null
 actual=$(args "$tmp/args" | paste -s -d ' ' -)
 [[ $actual == '-C /repo list --format=json --config-set list.json-schema=2 --config-set list.full=false --config-set list.timeout-ms=5000' ]]
-actual=$(args "$tmp/timeout-args" | paste -s -d ' ' -)
-[[ $actual == *'--signal=TERM --kill-after=0.250s 10.000s '* ]]
 
 printf 'Worktrunk adapter tests passed\n'

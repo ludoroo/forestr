@@ -6,10 +6,8 @@ FORESTR_BACKEND=${FORESTR_BACKEND:-}
 FORESTR_BACKEND_CAPABILITIES=${FORESTR_BACKEND_CAPABILITIES:-}
 FORESTR_WORKTRUNK_BIN=${FORESTR_WORKTRUNK_BIN:-}
 FORESTR_BACKEND_ENRICH=${FORESTR_BACKEND_ENRICH:-false}
-FORESTR_BACKEND_ENRICHMENT_TIMEOUT_MS=${FORESTR_BACKEND_ENRICHMENT_TIMEOUT_MS:-10000}
 FORESTR_BACKEND_ENRICHMENT_COLLECTION_TIMEOUT_MS=${FORESTR_BACKEND_ENRICHMENT_COLLECTION_TIMEOUT_MS:-5000}
 FORESTR_BACKEND_ENRICHMENT_CONCURRENCY=${FORESTR_BACKEND_ENRICHMENT_CONCURRENCY:-2}
-FORESTR_BACKEND_CONFIG_WARNING=${FORESTR_BACKEND_CONFIG_WARNING:-}
 FORESTR_BACKEND_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 
 backend_configured_name() {
@@ -46,21 +44,12 @@ backend_resolve() {
                 FORESTR_BACKEND=worktrunk
                 FORESTR_WORKTRUNK_BIN=$wt_candidate
                 FORESTR_BACKEND_ENRICH=$(forestr_config_bool enrich_backend true)
-                FORESTR_BACKEND_ENRICHMENT_TIMEOUT_MS=$(forestr_config_positive_integer worktrunk_enrichment_timeout_ms 10000)
                 FORESTR_BACKEND_ENRICHMENT_COLLECTION_TIMEOUT_MS=$(forestr_config_positive_integer worktrunk_enrichment_collection_timeout_ms 5000)
                 FORESTR_BACKEND_ENRICHMENT_CONCURRENCY=$(forestr_config_concurrency worktrunk_enrichment_concurrency 2)
-                FORESTR_BACKEND_CONFIG_WARNING=
-                if (( FORESTR_BACKEND_ENRICHMENT_TIMEOUT_MS < FORESTR_BACKEND_ENRICHMENT_COLLECTION_TIMEOUT_MS )); then
-                    FORESTR_BACKEND_CONFIG_WARNING='⚠ worktrunk_enrichment_timeout_ms must be >= worktrunk_enrichment_collection_timeout_ms; using safe defaults (10000/5000 ms).'
-                    FORESTR_BACKEND_ENRICHMENT_TIMEOUT_MS=10000
-                    FORESTR_BACKEND_ENRICHMENT_COLLECTION_TIMEOUT_MS=5000
-                fi
-                # GNU timeout is needed only when Worktrunk enrichment is on.
                 FORESTR_BACKEND_CAPABILITIES=$($JQ_BIN -cn \
-                    --argjson timeout "$FORESTR_BACKEND_ENRICH" \
                     '{version:1,backend:"worktrunk",operations:{open:true,create:true,remove:true,enrich:true},
                       features:{create_clobber:true,remove_stale:true,relocate:true},
-                      dependencies:{wt:true,gnu_timeout:$timeout}}')
+                      dependencies:{wt:true}}')
                 # shellcheck source=./backend_worktrunk.sh
                 source "$FORESTR_BACKEND_ROOT/backend_worktrunk.sh"
                 return 0
@@ -101,9 +90,7 @@ backend_validate_request() {
              (.target | type == "string" and length > 0) and (.force | type == "boolean")
              and ((.path // "") | type == "string")
            else
-             (.timeout_bin | type == "string" and length > 0)
-             and (.timeout_ms | type == "number" and . > 0 and floor == .)
-             and (.collection_timeout_ms | type == "number" and . > 0 and floor == .)
+             (.collection_timeout_ms | type == "number" and . > 0 and floor == .)
            end)
     ' >/dev/null 2>&1 <<<"$1"
 }
