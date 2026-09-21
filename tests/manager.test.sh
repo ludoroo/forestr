@@ -612,7 +612,11 @@ bash "$plugin_root/manager.sh" __header "$warning_state" >"$tmp/current-header"
 ! grep -Fq 'backend:' "$tmp/current-header"
 ! grep -Fq "$repo_a" "$tmp/current-header"
 ! grep -Fq 'manage help' "$tmp/current-header"
-grep -Fq 'manage footer' <(bash "$plugin_root/manager.sh" __footer "$warning_state")
+bash "$plugin_root/manager.sh" __footer "$warning_state" >"$tmp/idle-footer"
+[[ $(wc -l <"$tmp/idle-footer") -eq 3 ]]
+[[ $(sed -n '1p' "$tmp/idle-footer") == ' ' ]]
+[[ $(sed -n '2p' "$tmp/idle-footer") == ' ' ]]
+[[ $(sed -n '3p' "$tmp/idle-footer") == 'manage footer' ]]
 unset TEST_HERDR_LIST_FAIL MANAGER_BACKGROUND_NOTIFY
 
 # Creation starts at an explicit repository chooser. The invoking/selected
@@ -772,7 +776,9 @@ unset TEST_WT_SWITCH_FAIL
 [[ $(cat "$source_state/mode") == new ]]
 grep -Fq 'Worktrunk could not open retry/me' "$source_state/error"
 bash "$plugin_root/manager.sh" __header "$source_state" >"$tmp/retry-header"
-grep -Fq 'Worktrunk could not open retry/me' "$tmp/retry-header"
+bash "$plugin_root/manager.sh" __footer "$source_state" >"$tmp/retry-footer"
+! grep -Fq 'Worktrunk could not open retry/me' "$tmp/retry-header"
+grep -Fq 'Worktrunk could not open retry/me' "$tmp/retry-footer"
 grep -Fxq 'repo a · base default' "$tmp/retry-header"
 ! grep -Fq 'backend:' "$tmp/retry-header"
 ! grep -Fq "$repo_a" "$tmp/retry-header"
@@ -794,6 +800,9 @@ grep -Fq 'change:clear-query' "$TEST_FZF_ARGS"
 grep -Fq 'unbind(change)' "$TEST_FZF_ARGS"
 grep -Fq 'rebind(change)' "$TEST_FZF_ARGS"
 grep -Fq 'transform-footer(' "$TEST_FZF_ARGS"
+remove_binding=$(grep -F -- '--bind=d:transform:' "$TEST_FZF_ARGS")
+grep -Fq 'exclude+transform-footer(' <<<"$remove_binding"
+! grep -Fq '+reload(' <<<"$remove_binding"
 grep -Fq 'show-input+clear-query+enable-search+change-prompt(/ )+change-ghost(search branches)' "$TEST_FZF_ARGS"
 grep -Fq 'hide-input' "$TEST_FZF_ARGS"
 grep -Fq -- '--bind=esc:transform:' "$TEST_FZF_ARGS"
@@ -879,7 +888,7 @@ close_line=$(grep -nF 'herdr <workspace> <close> <w2>' "$TEST_CAPTURE" | cut -d:
 [[ $resolve_line -lt $remove_line && $remove_line -lt $focus_line && $focus_line -lt $close_line ]]
 
 # Action failures are persisted at the public worker seam so fzf transforms,
-# whose stderr/stdin are /dev/null, can render them in the popup header.
+# whose stderr/stdin are /dev/null, can render them in the fixed status area.
 : >"$TEST_CAPTURE"
 export TEST_WT_SWITCH_FAIL=true
 if bash "$plugin_root/manager.sh" __open "$state" "$local_payload" '' </dev/null 2>"$tmp/open-error"; then
@@ -889,7 +898,7 @@ unset TEST_WT_SWITCH_FAIL
 grep -Fq 'Worktrunk could not open local-free' "$state/error"
 
 # Worktrunk failure leaves Herdr untouched and propagates failure for fzf to
-# retain/reload the current mode.
+# retain the current mode while background discovery reconciles the snapshot.
 : >"$TEST_CAPTURE"
 export TEST_WT_REMOVE_FAIL=true
 if bash "$plugin_root/manager.sh" __remove "$state" "$b_payload" false </dev/null 2>"$tmp/remove-error"; then
@@ -901,10 +910,22 @@ printf 'current warning\n' >"$state/warnings.$(cat "$state/generation")"
 printf 'manage help must stay out of header\n' >"$state/manage.help"
 printf 'manage footer\n' >"$state/manage.footer"
 bash "$plugin_root/manager.sh" __header "$state" >"$tmp/action-error-header"
-grep -Fq 'Worktrunk did not remove feature-b' "$tmp/action-error-header"
+bash "$plugin_root/manager.sh" __footer "$state" >"$tmp/action-error-footer"
+! grep -Fq 'Worktrunk did not remove feature-b' "$tmp/action-error-header"
+grep -Fq 'Worktrunk did not remove feature-b' "$tmp/action-error-footer"
 grep -Fq 'current warning' "$tmp/action-error-header"
 ! grep -Fq 'manage help' "$tmp/action-error-header"
-grep -Fq 'manage footer' <(bash "$plugin_root/manager.sh" __footer "$state")
+grep -Fq 'manage footer' "$tmp/action-error-footer"
+rm -f "$state/error"
+printf '%s\n' \
+    'first warning with enough text to wrap across the reserved status rows' \
+    'second warning continues beyond the available width' >"$state/action-warning"
+FZF_COLUMNS=40 bash "$plugin_root/manager.sh" __footer "$state" >"$tmp/action-warning-footer"
+sed $'s/\033\\[[0-9;]*m//g' "$tmp/action-warning-footer" >"$tmp/action-warning-footer.plain"
+[[ $(wc -l <"$tmp/action-warning-footer.plain") -eq 3 ]]
+! grep -Fq '·' "$tmp/action-warning-footer.plain"
+grep -Fq '…' <(sed -n '2p' "$tmp/action-warning-footer.plain")
+[[ $(sed -n '3p' "$tmp/action-warning-footer.plain") == 'manage footer' ]]
 ! grep -Fq 'herdr <workspace> <close>' "$TEST_CAPTURE"
 
 # Non-Git invocation still discovers repositories globally through Herdr.

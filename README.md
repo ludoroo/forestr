@@ -81,7 +81,7 @@ The create wizard is repository-first: choose a repository, then choose an exist
 
 The budget covers Worktrunk's collection phase. If broader `wt list` setup stalls, the existing Git rows remain usable; refreshing or closing the popup terminates the background producer.
 
-The initial active-repository row is rendered before global Herdr discovery finishes. Refresh work is generation-scoped, and stale background output cannot replace a newer snapshot.
+The initial active-repository row is rendered before global Herdr discovery finishes. Refresh work is generation-scoped, and stale background output cannot replace a newer snapshot. Operation results use a fixed two-row footer status area, so their fzf transforms do not synchronously rebuild the candidate list. Successful removals hide the selected row immediately; background discovery may later reload candidates to reconcile partial mutations and authoritative state.
 
 ## Git safety
 

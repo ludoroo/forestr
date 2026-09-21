@@ -515,8 +515,6 @@ render_header() {
     generation=$(current_generation "$state_dir")
     mode=$(cat "$state_dir/mode" 2>/dev/null || printf manage)
     render_fake_search_bar "$state_dir" "$mode"
-    cat "$state_dir/error" 2>/dev/null || true
-    cat "$state_dir/action-warning" 2>/dev/null || true
     [[ $mode != manage ]] || cat "$(generation_warnings_file "$state_dir" "$generation")" 2>/dev/null || true
     case $mode in
         manage) ;;
@@ -541,12 +539,72 @@ render_header() {
     esac
 }
 
+wrapped_status_message() {
+    local file=$1 width=$2
+    awk -v width="$width" '
+      function trim(value) {
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+        return value
+      }
+      function take_line(    candidate, cut, i, result) {
+        if (length(message) <= width) {
+          result = message
+          message = ""
+          return result
+        }
+        candidate = substr(message, 1, width + 1)
+        cut = 0
+        for (i = width; i >= 1; i--) {
+          if (substr(candidate, i, 1) == " ") { cut = i; break }
+        }
+        if (cut < int(width / 3)) cut = width
+        result = trim(substr(message, 1, cut))
+        message = trim(substr(message, cut + 1))
+        return result
+      }
+      NF {
+        line = trim($0)
+        if (line != "") message = message (message == "" ? "" : " ") line
+      }
+      END {
+        first = take_line()
+        if (length(message) <= width) {
+          second = message
+        } else {
+          width--
+          second = take_line() "…"
+        }
+        print first
+        print second
+      }
+    ' "$file"
+}
+
 render_footer() {
-    local state_dir=$1 mode search footer
+    local state_dir=$1 mode search footer file color columns width line
     mode=$(cat "$state_dir/mode" 2>/dev/null || printf manage)
     search=$(cat "$state_dir/search" 2>/dev/null || printf false)
     footer="$state_dir/$mode.footer"
     [[ $search != true || $mode == new ]] || footer="$state_dir/$mode.search.footer"
+    columns=${FZF_COLUMNS:-80}
+    [[ $columns =~ ^[0-9]+$ ]] || columns=80
+    (( columns >= 24 )) || columns=24
+    (( columns <= 500 )) || columns=500
+    width=$((columns - 4))
+    file=
+    if [[ -s $state_dir/error ]]; then
+        file="$state_dir/error"; color=31
+    elif [[ -s $state_dir/action-warning ]]; then
+        file="$state_dir/action-warning"; color=33
+    fi
+    if [[ -n $file ]]; then
+        while IFS= read -r line; do
+            if [[ -n $line ]]; then printf '\033[%sm%s\033[0m\n' "$color" "$line"; else printf ' \n'; fi
+        done < <(wrapped_status_message "$file" "$width")
+    else
+        # Keep both status rows allocated even when there is no message.
+        printf ' \n \n'
+    fi
     cat "$footer" 2>/dev/null || true
 }
 
@@ -584,7 +642,7 @@ notify_manage_snapshot() {
     for _ in {1..100}; do [[ -S $socket ]] && break; sleep 0.01; done
     [[ -S $socket ]] || return 0
     manager_q=$(printf '%q' "$plugin_root/manager.sh"); state_q=$(printf '%q' "$state_dir")
-    action="transform-header($bash_q $manager_q __header $state_q)+reload($bash_q $manager_q __background-rows $state_q $generation)"
+    action="transform-header($bash_q $manager_q __header $state_q)+transform-footer($bash_q $manager_q __footer $state_q)+reload($bash_q $manager_q __background-rows $state_q $generation)"
     "$curl_bin" --silent --show-error --unix-socket "$socket" -X POST http://localhost/ -d "$action" >/dev/null 2>&1 || true
 }
 
@@ -1233,26 +1291,29 @@ join_key_actions() {
 }
 modal_unbind_actions=$(join_key_actions unbind "$direct_input_keys")
 modal_rebind_actions=$(join_key_actions rebind "$bindable_keys")
+status_action="transform-footer($footer_cmd)"
+chrome_actions="transform-header($header_cmd)+$status_action"
+reload_actions="$chrome_actions+reload($rows_cmd)"
 list_normal_actions="clear-query+disable-search+hide-input+rebind(change)+$modal_rebind_actions"
-new_input_actions="show-input+clear-query+disable-search+change-prompt(branch name  )+change-ghost()+unbind(change)+$modal_unbind_actions+transform-header($header_cmd)+transform-footer($footer_cmd)+reload($rows_cmd)"
-source_normal_actions="$list_normal_actions+change-prompt()+change-ghost()+transform-header($header_cmd)+transform-footer($footer_cmd)+reload($rows_cmd)"
-repository_normal_actions="$list_normal_actions+change-prompt()+change-ghost()+transform-header($header_cmd)+transform-footer($footer_cmd)+reload($rows_cmd)"
-manage_normal_actions="$list_normal_actions+change-prompt()+change-ghost()+transform-header($header_cmd)+transform-footer($footer_cmd)+reload($rows_cmd)"
+new_input_actions="show-input+clear-query+disable-search+change-prompt(branch name  )+change-ghost()+unbind(change)+$modal_unbind_actions+$reload_actions"
+source_normal_actions="$list_normal_actions+change-prompt()+change-ghost()+$reload_actions"
+repository_normal_actions="$list_normal_actions+change-prompt()+change-ghost()+$reload_actions"
+manage_normal_actions="$list_normal_actions+change-prompt()+change-ghost()+$reload_actions"
 
-# One Enter binding serves all four screens. A failed backend request reloads
-# the same screen and leaves direct input/query intact; success aborts fzf so
-# the common Herdr lifecycle owns focus/open behavior.
-accept_transform="transform:mode=\$(cat $state_q/mode); case \$mode in manage) if $manager_q __open $state_q {1}; then echo abort; else echo 'transform-header($header_cmd)+transform-footer($footer_cmd)+reload($rows_cmd)'; fi ;; repository) if $manager_q __select-repository $state_q {1}; then echo '$source_normal_actions'; else echo 'transform-header($header_cmd)+transform-footer($footer_cmd)'; fi ;; source) kind=\$($manager_q __kind {1} 2>/dev/null || true); if [[ \$kind = new ]]; then if $manager_q __new-mode $state_q false; then echo '$new_input_actions'; else echo 'transform-header($header_cmd)+transform-footer($footer_cmd)'; fi; elif $manager_q __open $state_q {1}; then echo abort; else echo 'transform-header($header_cmd)+transform-footer($footer_cmd)+reload($rows_cmd)'; fi ;; new) if $manager_q __create $state_q {q}; then echo abort; else echo 'transform-header($header_cmd)+transform-footer($footer_cmd)+reload($rows_cmd)'; fi ;; esac"
-remove_transform="transform:if [[ \$(cat $state_q/mode) != manage ]]; then exit; fi; status=0; $manager_q __remove $state_q {1} false || status=\$?; if [[ \$status = 10 ]]; then echo abort; else echo 'transform-header($header_cmd)+transform-footer($footer_cmd)+reload($rows_cmd)'; fi"
-force_remove_transform="transform:if [[ \$(cat $state_q/mode) != manage ]]; then exit; fi; status=0; $manager_q __remove $state_q {1} true || status=\$?; if [[ \$status = 10 ]]; then echo abort; else echo 'transform-header($header_cmd)+transform-footer($footer_cmd)+reload($rows_cmd)'; fi"
+# One Enter binding serves all four screens. Failures update the fixed status
+# area without rebuilding candidates; success aborts fzf so the common Herdr
+# lifecycle owns focus/open behavior.
+accept_transform="transform:mode=\$(cat $state_q/mode); case \$mode in manage) if $manager_q __open $state_q {1}; then echo abort; else echo '$status_action'; fi ;; repository) if $manager_q __select-repository $state_q {1}; then echo '$source_normal_actions'; else echo '$status_action'; fi ;; source) kind=\$($manager_q __kind {1} 2>/dev/null || true); if [[ \$kind = new ]]; then if $manager_q __new-mode $state_q false; then echo '$new_input_actions'; else echo '$status_action'; fi; elif $manager_q __open $state_q {1}; then echo abort; else echo '$status_action'; fi ;; new) if $manager_q __create $state_q {q}; then echo abort; else echo '$status_action'; fi ;; esac"
+remove_transform="transform:if [[ \$(cat $state_q/mode) != manage ]]; then exit; fi; status=0; $manager_q __remove $state_q {1} false || status=\$?; if [[ \$status = 10 ]]; then echo abort; elif [[ \$status = 0 ]]; then echo 'exclude+$status_action'; else echo '$status_action'; fi"
+force_remove_transform="transform:if [[ \$(cat $state_q/mode) != manage ]]; then exit; fi; status=0; $manager_q __remove $state_q {1} true || status=\$?; if [[ \$status = 10 ]]; then echo abort; elif [[ \$status = 0 ]]; then echo 'exclude+$status_action'; else echo '$status_action'; fi"
 create_transition="transform:if [[ \$(cat $state_q/mode) = manage ]]; then $manager_q __enter-repository $state_q {1}; echo '$repository_normal_actions'; fi"
 new_transition="transform:if [[ \$(cat $state_q/mode) = source ]] && $manager_q __new-mode $state_q false; then echo '$new_input_actions'; fi"
-force_transition="transform:if [[ \$(cat $state_q/mode) = source ]]; then if $manager_q __new-mode $state_q true; then echo '$new_input_actions'; else echo 'transform-header($header_cmd)'; fi; fi"
-search_transition="transform:mode=\$(cat $state_q/mode); case \$mode in manage) $manager_q __search-mode $state_q true; echo 'show-input+clear-query+enable-search+change-prompt(/ )+change-ghost(search worktrees)+unbind(change)+$modal_unbind_actions+transform-header($header_cmd)+transform-footer($footer_cmd)' ;; repository) $manager_q __search-mode $state_q true; echo 'show-input+clear-query+enable-search+change-prompt(/ )+change-ghost(search repositories)+unbind(change)+$modal_unbind_actions+transform-header($header_cmd)+transform-footer($footer_cmd)' ;; source) $manager_q __search-mode $state_q true; echo 'show-input+clear-query+enable-search+change-prompt(/ )+change-ghost(search branches)+unbind(change)+$modal_unbind_actions+transform-header($header_cmd)+transform-footer($footer_cmd)' ;; esac"
-scope_local="transform:if [[ \$(cat $state_q/mode) = source ]]; then $manager_q __scope $state_q local; echo 'hide-input+change-prompt()+change-ghost()+transform-header($header_cmd)+transform-footer($footer_cmd)+reload($rows_cmd)'; fi"
-scope_remote="transform:if [[ \$(cat $state_q/mode) = source ]]; then $manager_q __scope $state_q remote; echo 'hide-input+change-prompt()+change-ghost()+transform-header($header_cmd)+transform-footer($footer_cmd)+reload($rows_cmd)'; fi"
-scope_both="transform:if [[ \$(cat $state_q/mode) = source ]]; then $manager_q __scope $state_q both; echo 'hide-input+change-prompt()+change-ghost()+transform-header($header_cmd)+transform-footer($footer_cmd)+reload($rows_cmd)'; fi"
-refresh_transition="transform:mode=\$(cat $state_q/mode); case \$mode in manage|repository|source) $manager_q __refresh $state_q; echo 'transform-header($header_cmd)+transform-footer($footer_cmd)+reload($rows_cmd)' ;; esac"
+force_transition="transform:if [[ \$(cat $state_q/mode) = source ]]; then if $manager_q __new-mode $state_q true; then echo '$new_input_actions'; else echo '$status_action'; fi; fi"
+search_transition="transform:mode=\$(cat $state_q/mode); case \$mode in manage) $manager_q __search-mode $state_q true; echo 'show-input+clear-query+enable-search+change-prompt(/ )+change-ghost(search worktrees)+unbind(change)+$modal_unbind_actions+$chrome_actions' ;; repository) $manager_q __search-mode $state_q true; echo 'show-input+clear-query+enable-search+change-prompt(/ )+change-ghost(search repositories)+unbind(change)+$modal_unbind_actions+$chrome_actions' ;; source) $manager_q __search-mode $state_q true; echo 'show-input+clear-query+enable-search+change-prompt(/ )+change-ghost(search branches)+unbind(change)+$modal_unbind_actions+$chrome_actions' ;; esac"
+scope_local="transform:if [[ \$(cat $state_q/mode) = source ]]; then $manager_q __scope $state_q local; echo 'hide-input+change-prompt()+change-ghost()+$reload_actions'; fi"
+scope_remote="transform:if [[ \$(cat $state_q/mode) = source ]]; then $manager_q __scope $state_q remote; echo 'hide-input+change-prompt()+change-ghost()+$reload_actions'; fi"
+scope_both="transform:if [[ \$(cat $state_q/mode) = source ]]; then $manager_q __scope $state_q both; echo 'hide-input+change-prompt()+change-ghost()+$reload_actions'; fi"
+refresh_transition="transform:mode=\$(cat $state_q/mode); case \$mode in manage|repository|source) $manager_q __refresh $state_q; echo '$reload_actions' ;; esac"
 quit_transform="transform:[[ \$(cat $state_q/mode) = new ]] || echo abort"
 esc_transform="transform:mode=\$(cat $state_q/mode); search=\$(cat $state_q/search 2>/dev/null || printf false); if [[ \$mode = new ]]; then $manager_q __source-mode $state_q; echo '$source_normal_actions'; elif [[ \$search = true ]]; then $manager_q __search-mode $state_q false; case \$mode in manage) echo '$manage_normal_actions' ;; repository) echo '$repository_normal_actions' ;; source) echo '$source_normal_actions' ;; esac; elif [[ \$mode = source ]]; then $manager_q __repository-mode $state_q; echo '$repository_normal_actions'; elif [[ \$mode = repository ]]; then $manager_q __manage-mode $state_q; echo '$manage_normal_actions'; else echo abort; fi"
 normal_bind_args=(--bind="esc:$esc_transform" --bind="$key_back:$esc_transform")

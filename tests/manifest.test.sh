@@ -90,6 +90,9 @@ with open(f"{root}/herdr-plugin.toml", "rb") as file:
 assert manifest["id"] == "ludoroo.forestr"
 assert manifest["name"] == "Forestr"
 assert manifest["version"] == "0.1.0"
+with open(f"{root}/README.md", encoding="utf-8") as file:
+    readme = file.read()
+assert f'- Version: `{manifest["version"]}`' in readme
 assert manifest["platforms"] == ["linux", "macos"]
 assert [action["id"] for action in manifest["actions"]] == ["open"]
 assert f'{manifest["id"]}.{manifest["actions"][0]["id"]}' == "ludoroo.forestr.open"
