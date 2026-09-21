@@ -1,6 +1,6 @@
 # Forestr
 
-Forestr is a private Linux and macOS plugin for [Herdr](https://herdr.dev/) that manages Git branch worktrees in one fast, modal `fzf` popup. It discovers repositories represented by Herdr workspaces, lists existing worktrees and available branches, opens or creates a checkout, focuses the matching workspace, and safely removes selected worktrees.
+Forestr is a Linux and macOS plugin for [Herdr](https://herdr.dev/) that manages Git branch worktrees in one fast, modal `fzf` popup. It discovers repositories represented by Herdr workspaces, lists existing worktrees and available branches, opens or creates a checkout, focuses the matching workspace, and safely removes selected worktrees.
 
 - Plugin ID: `ludoroo.forestr`
 - Action: `ludoroo.forestr.open`
@@ -38,16 +38,6 @@ brew install bash jq fzf
 ```bash
 herdr plugin install ludoroo/forestr
 ```
-
-This repository is private. Herdr installs GitHub plugins over Git, so configure HTTPS authentication first if the repository is not already accessible:
-
-```bash
-gh auth login --hostname github.com --git-protocol https
-gh auth setup-git
-herdr plugin install ludoroo/forestr
-```
-
-`gh auth setup-git` installs the Git credential helper used for private HTTPS clones. It does not make the repository public.
 
 To develop from a local clone, run this from the repository root:
 
@@ -98,7 +88,7 @@ Worktrunk operations preserve Worktrunk's own hooks and safety checks; Forestr d
 
 ## Configuration
 
-Find the private configuration directory with:
+Find the plugin configuration directory with:
 
 ```bash
 herdr plugin config-dir ludoroo.forestr
