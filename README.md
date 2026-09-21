@@ -4,7 +4,7 @@ Forestr is a private Linux and macOS plugin for [Herdr](https://herdr.dev/) that
 
 - Plugin ID: `ludoroo.forestr`
 - Action: `ludoroo.forestr.open`
-- Version: `0.1.0`
+- Version: `0.1.1`
 
 ## Screenshot
 
