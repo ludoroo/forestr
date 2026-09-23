@@ -48,6 +48,15 @@ done
 "$git_bin" -C "$repo_a" worktree add -q --detach "$detached_a" HEAD
 "$git_bin" -C "$repo_a" worktree lock --reason 'test lock' "$feature_a"
 "$git_bin" -C "$repo_b" worktree add -q -b feature-b "$feature_b"
+"$git_bin" -C "$repo_a" -c user.name=Test -c user.email=test@example.com \
+    commit -q --allow-empty -m 'main-only preview exclusion'
+for i in {1..27}; do
+    "$git_bin" -C "$feature_a" -c user.name=Test -c user.email=test@example.com \
+        commit -q --allow-empty -m "feature preview $i"
+done
+"$git_bin" -C "$feature_a" -c user.name=Test -c user.email=test@example.com \
+    commit -q --allow-empty -m $'unsafe \033]8;;https://example.invalid\a subject'
+"$git_bin" -C "$repo_a" config log.showSignature true
 head_a=$("$git_bin" -C "$repo_a" rev-parse HEAD)
 "$git_bin" -C "$repo_a" update-ref refs/remotes/origin/main "$head_a"
 "$git_bin" -C "$repo_a" update-ref refs/remotes/origin/remote-only "$head_a"
@@ -68,7 +77,7 @@ if [[ ${1:-} == workspace && ${2:-} == list ]]; then
 {"result":{"workspaces":[
  {"workspace_id":"w1","worktree":{"checkout_path":"$TEST_REPO_A","repo_key":"$TEST_REPO_A/.git","repo_name":"repo a","repo_root":"$TEST_REPO_A"}},
  {"workspace_id":"w2","worktree":{"checkout_path":"$TEST_FEATURE_A","repo_key":"$TEST_REPO_A/.git","repo_name":"repo a","repo_root":"$TEST_REPO_A"}},
- {"workspace_id":"w3","worktree":{"checkout_path":"$TEST_REPO_B","repo_key":"$TEST_REPO_B/.git","repo_name":"repo-b","repo_root":"$TEST_REPO_B"}},
+ {"workspace_id":"w3","worktree":{"checkout_path":"$TEST_REPO_B","repo_name":"repo-b","repo_root":"$TEST_REPO_B"}},
  {"workspace_id":"w4","worktree":{"checkout_path":"$TEST_FEATURE_B","repo_key":"$TEST_REPO_B/.git","repo_name":"repo-b","repo_root":"$TEST_REPO_B"}}
 ]}}
 JSON
@@ -196,7 +205,8 @@ run_manager() { reset_capture; bash "$plugin_root/manager.sh" </dev/null; }
 new_state() {
     local dir=$1 scope=${2:-local}
     mkdir -p "$dir"
-    printf 'manage\n' >"$dir/mode"; printf '%s\n' "$scope" >"$dir/scope"; printf 'false\n' >"$dir/force"; : >"$dir/warnings"
+    printf 'manage\n' >"$dir/mode"; printf '%s\n' "$scope" >"$dir/scope"; printf 'true\n' >"$dir/preview"
+    printf 'false\n' >"$dir/force"; : >"$dir/warnings"
 }
 payload_for() { grep -F "$1" "$2" | head -n 1 | cut -f1; }
 
@@ -454,11 +464,79 @@ grep -Fq "$feature_a" "$TEST_CANDIDATES"
 # Full unusual paths survive in the hidden payload.
 feature_payload=$(payload_for ' feature-a ' "$TEST_CANDIDATES")
 [[ $("$jq_bin" -Rnr --arg p "$feature_payload" '$p|@base64d|fromjson|.path') == "$feature_a" ]]
+FORESTR_GIT_BIN="$git_bin" JQ_BIN="$jq_bin" HERDR_BIN="$tmp/missing-herdr" \
+    FZF_BIN="$tmp/missing-fzf" CURL_BIN="$tmp/missing-curl" WORKTRUNK_BIN="$tmp/missing-wt" \
+    bash "$plugin_root/preview.sh" "$feature_payload" >"$tmp/preview"
+grep -Fq 'repo a  feature-a' "$tmp/preview"
+grep -Fq "$feature_a" "$tmp/preview"
+grep -Fq 'unsafe' "$tmp/preview"
+grep -Fq 'feature preview 27' "$tmp/preview"
+! grep -Fq 'main-only preview exclusion' "$tmp/preview"
+[[ $(tail -n +4 "$tmp/preview" | wc -l | tr -d ' ') -eq 25 ]]
+python3 - "$tmp/preview" <<'PY'
+import sys
+
+data = open(sys.argv[1], "rb").read().split(b"\n")[3:]
+controls = [byte for byte in b"\n".join(data) if byte < 32 and byte != 10]
+assert not controls, controls
+PY
+header_payload=$("$jq_bin" -Rnr --arg p "$feature_payload" \
+    '$p|@base64d|fromjson|.repo_name="repo\nspoof"|.label="branch\u061c\nspoof"|tojson|@base64')
+FORESTR_GIT_BIN="$git_bin" JQ_BIN="$jq_bin" bash "$plugin_root/preview.sh" \
+    "$header_payload" >"$tmp/header-preview"
+[[ $(sed -n '1p' "$tmp/header-preview") == *'repo spoof  branch  spoof'* ]]
+[[ $(sed -n '3p' "$tmp/header-preview") == '' ]]
+missing_preview_payload=$("$jq_bin" -Rnr --arg p "$feature_payload" --arg path "$tmp/missing-preview" \
+    '$p|@base64d|fromjson|.path=$path|.canonical_path=$path|tojson|@base64')
+FORESTR_GIT_BIN="$git_bin" JQ_BIN="$jq_bin" bash "$plugin_root/preview.sh" \
+    "$missing_preview_payload" >"$tmp/missing-preview-output"
+grep -Fq 'worktree path no longer exists' "$tmp/missing-preview-output"
+wrong_repo_payload=$("$jq_bin" -Rnr --arg p "$feature_payload" --arg key "$repo_b/.git" \
+    '$p|@base64d|fromjson|.repo_key=$key|tojson|@base64')
+FORESTR_GIT_BIN="$git_bin" JQ_BIN="$jq_bin" bash "$plugin_root/preview.sh" \
+    "$wrong_repo_payload" >"$tmp/wrong-repo-preview"
+grep -Fq 'worktree identity changed' "$tmp/wrong-repo-preview"
+unresolved_key_payload=$("$jq_bin" -Rnr --arg p "$feature_payload" --arg key "$tmp/missing-repo-key" \
+    '$p|@base64d|fromjson|.repo_key=$key|tojson|@base64')
+FORESTR_GIT_BIN="$git_bin" JQ_BIN="$jq_bin" bash "$plugin_root/preview.sh" \
+    "$unresolved_key_payload" >"$tmp/unresolved-key-preview"
+grep -Fq 'worktree identity changed' "$tmp/unresolved-key-preview"
+mkdir "$feature_a/preview-subdirectory"
+subdirectory_payload=$("$jq_bin" -Rnr --arg p "$feature_payload" --arg path "$feature_a/preview-subdirectory" \
+    '$p|@base64d|fromjson|.path=$path|.canonical_path=$path|tojson|@base64')
+FORESTR_GIT_BIN="$git_bin" JQ_BIN="$jq_bin" bash "$plugin_root/preview.sh" \
+    "$subdirectory_payload" >"$tmp/subdirectory-preview"
+grep -Fq 'worktree identity changed' "$tmp/subdirectory-preview"
+feature_b_payload=$(payload_for ' feature-b ' "$TEST_CANDIDATES")
+[[ $("$jq_bin" -Rnr --arg p "$feature_b_payload" '$p|@base64d|fromjson|.repo_key') == "$repo_b" ]]
+FORESTR_GIT_BIN="$git_bin" JQ_BIN="$jq_bin" bash "$plugin_root/preview.sh" \
+    "$feature_b_payload" >"$tmp/fallback-key-preview"
+grep -Fq 'repo-b  feature-b' "$tmp/fallback-key-preview"
+grep -Fq 'initial' "$tmp/fallback-key-preview"
 # Terminal-inherited styling and display-width table behavior remain configured.
 grep -Fq -- '--color=16,fg:-1,bg:-1,gutter:-1' "$TEST_FZF_ARGS"
 grep -Fq -- '--with-shell=' "$TEST_FZF_ARGS"
 grep -Fq -- 'bash -c' "$TEST_FZF_ARGS"
 grep -Fq -- '--header-lines=1' "$TEST_FZF_ARGS"
+grep -Fq -- '--preview=' "$TEST_FZF_ARGS"
+grep -Fq 'preview.sh {1}' "$TEST_FZF_ARGS"
+grep -Fxq -- '--preview-window=right,42%,border-left,nowrap,noinfo,~3,<50(down,40%,border-top)' "$TEST_FZF_ARGS"
+grep -Fq -- '--bind=p:transform:' "$TEST_FZF_ARGS"
+grep -Fq '__preview-toggle' "$TEST_FZF_ARGS"
+grep -Fq '__preview-restore' "$TEST_FZF_ARGS"
+grep -Fq 'hide-preview' "$TEST_FZF_ARGS"
+preview_state="$tmp/preview-state"; new_state "$preview_state"
+[[ $(bash "$plugin_root/manager.sh" __preview-toggle "$preview_state") == hide-preview ]]
+[[ $(cat "$preview_state/preview") == false ]]
+bash "$plugin_root/manager.sh" __search-mode "$preview_state" true
+bash "$plugin_root/manager.sh" __search-mode "$preview_state" false
+[[ $(bash "$plugin_root/manager.sh" __preview-restore "$preview_state") == hide-preview ]]
+printf 'repository\n' >"$preview_state/mode"
+[[ -z $(bash "$plugin_root/manager.sh" __preview-toggle "$preview_state") ]]
+[[ $(cat "$preview_state/preview") == false ]]
+printf 'manage\n' >"$preview_state/mode"
+[[ $(bash "$plugin_root/manager.sh" __preview-toggle "$preview_state") == show-preview ]]
+[[ $(cat "$preview_state/preview") == true ]]
 
 # Layering is observable at the current-mode snapshot seam: all open Herdr
 # checkouts arrive before delayed Git, Git adds the non-open detached worktree,
@@ -808,7 +886,9 @@ grep -Fq 'hide-input' "$TEST_FZF_ARGS"
 grep -Fq -- '--bind=esc:transform:' "$TEST_FZF_ARGS"
 grep -Fq 'unbind(/)' "$TEST_FZF_ARGS"
 grep -Fq 'unbind(q)' "$TEST_FZF_ARGS"
+grep -Fq 'unbind(p)' "$TEST_FZF_ARGS"
 grep -Fq 'rebind(/)' "$TEST_FZF_ARGS"
+grep -Fq 'rebind(p)' "$TEST_FZF_ARGS"
 grep -Fq 'unbind(h)' "$TEST_FZF_ARGS"
 grep -Fq 'unbind(l)' "$TEST_FZF_ARGS"
 ! grep -Eq 'esc (repositories|sources|worktrees)' "$plugin_root/manager.sh"

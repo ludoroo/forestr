@@ -57,6 +57,7 @@ The popup begins in the worktree manager. Default keys are:
 | `Enter` | Open or choose the selected item |
 | `c` | Start the create wizard |
 | `d` / `D` | Remove / force-remove the selected worktree |
+| `p` | Toggle the selected worktree's commit log preview |
 | `/`, `Ctrl-R`, `q` | Search, refresh, quit |
 | `h` / `Esc` | Go back or close |
 
@@ -72,6 +73,8 @@ The create wizard is repository-first: choose a repository, then choose an exist
 The budget covers Worktrunk's collection phase. If broader `wt list` setup stalls, the existing Git rows remain usable; refreshing or closing the popup terminates the background producer.
 
 The initial active-repository row is rendered before global Herdr discovery finishes. Refresh work is generation-scoped, and stale background output cannot replace a newer snapshot. Operation results use a fixed two-row footer status area, so their fzf transforms do not synchronously rebuild the candidate list. Successful removals hide the selected row immediately; background discovery may later reload candidates to reconcile partial mutations and authoritative state.
+
+The manager shows a bounded commit-log preview for the selected worktree. It follows only that worktree's `HEAD` ancestry—never `--all`—uses one line per commit, and is capped at 25 commits to remain readable in busy repositories. Press `p` to toggle it. The preview moves below the list when the side panel would be too narrow and stays hidden in the create wizard.
 
 ## Git safety
 

@@ -1059,6 +1059,20 @@ case ${1:-} in
     __footer)
         render_footer "$2"; exit 0
         ;;
+    __preview-toggle)
+        state_dir=$2
+        if [[ $(cat "$state_dir/mode" 2>/dev/null || printf manage) != manage ]]; then exit 0; fi
+        if [[ $(cat "$state_dir/preview" 2>/dev/null || printf true) == true ]]; then
+            printf 'false\n' >"$state_dir/preview"; printf 'hide-preview\n'
+        else
+            printf 'true\n' >"$state_dir/preview"; printf 'show-preview\n'
+        fi
+        exit 0
+        ;;
+    __preview-restore)
+        if [[ $(cat "$2/preview" 2>/dev/null || printf true) == true ]]; then printf 'show-preview\n'; else printf 'hide-preview\n'; fi
+        exit 0
+        ;;
     __search-mode)
         case ${3:-false} in true|false) printf '%s\n' "$3" >"$2/search" ;; *) exit 1 ;; esac
         exit 0
@@ -1215,12 +1229,13 @@ key_force_remove=$(forestr_key key_force_remove D) || config_error=true
 key_local=$(forestr_key key_local l) || config_error=true
 key_remote=$(forestr_key key_remote r) || config_error=true
 key_both=$(forestr_key key_both b) || config_error=true
+key_preview=$(forestr_key key_preview p) || config_error=true
 key_refresh=$(forestr_key key_refresh ctrl-r) || config_error=true
 key_quit=$(forestr_key key_quit q) || config_error=true
 key_normal=$(forestr_key key_normal esc) || config_error=true
 $config_error && { sleep 3; exit 1; }
-key_names=(key_down key_up key_first key_last key_search key_open key_create key_new key_back key_force_create key_remove key_force_remove key_local key_remote key_both key_refresh key_quit key_normal)
-key_values=("$key_down" "$key_up" "$key_first" "$key_last" "$key_search" "$key_open" "$key_create" "$key_new" "$key_back" "$key_force_create" "$key_remove" "$key_force_remove" "$key_local" "$key_remote" "$key_both" "$key_refresh" "$key_quit" "$key_normal")
+key_names=(key_down key_up key_first key_last key_search key_open key_create key_new key_back key_force_create key_remove key_force_remove key_local key_remote key_both key_preview key_refresh key_quit key_normal)
+key_values=("$key_down" "$key_up" "$key_first" "$key_last" "$key_search" "$key_open" "$key_create" "$key_new" "$key_back" "$key_force_create" "$key_remove" "$key_force_remove" "$key_local" "$key_remote" "$key_both" "$key_preview" "$key_refresh" "$key_quit" "$key_normal")
 for ((i=0; i<${#key_values[@]}; i++)); do
     for ((j=i+1; j<${#key_values[@]}; j++)); do
         if [[ ${key_values[$i]} == "${key_values[$j]}" ]]; then
@@ -1250,18 +1265,20 @@ trap 'exit 129' HUP
 trap 'exit 143' TERM
 trap 'exit 130' INT
 printf 'manage\n' >"$state_dir/mode"; printf '%s\n' "$create_scope" >"$state_dir/scope"
-printf 'false\n' >"$state_dir/search"; printf '0\n' >"$state_dir/generation"
+printf 'false\n' >"$state_dir/search"; printf 'true\n' >"$state_dir/preview"; printf '0\n' >"$state_dir/generation"
 
 manager_script_q=$(printf '%q' "$plugin_root/manager.sh")
+preview_script_q=$(printf '%q' "$plugin_root/preview.sh")
 manager_q="$bash_q $manager_script_q"
 state_q=$(printf '%q' "$state_dir")
 rows_cmd="$manager_q __rows $state_q"
 header_cmd="$manager_q __header $state_q"
 footer_cmd="$manager_q __footer $state_q"
+preview_cmd="$bash_q $preview_script_q {1}"
 normal_label=esc; [[ $key_normal == esc ]] || normal_label+="/$key_normal"
 back_label="$key_back/$normal_label"
 select_label=enter; [[ $key_open == enter ]] || select_label="$key_open/enter"
-manage_footer="$key_down/$key_up move · $select_label open · $key_create create · $key_remove/$key_force_remove delete/force · $key_search search · $key_refresh refresh · $key_quit quit · $back_label close"
+manage_footer="$key_down/$key_up move · $select_label open · $key_create create · $key_remove/$key_force_remove delete/force · $key_preview preview · $key_search search · $key_refresh refresh · $key_quit quit · $back_label close"
 repository_footer="$key_down/$key_up move · $select_label choose · $key_search search · $back_label back · $key_refresh refresh · $key_quit quit"
 source_footer="$select_label use · $key_new new · $key_local/$key_remote/$key_both local/remote/both · $key_search search · $back_label back · $key_quit quit"
 [[ $backend_create_clobber != true ]] || source_footer+=" · $key_force_create clobber-new"
@@ -1277,7 +1294,7 @@ printf '%s\n' "enter use · $normal_label clear search" >"$state_dir/source.sear
 # Keys are mode-gated by transforms. Direct branch input additionally unbinds
 # every configured printable action key so all branch-name characters reach
 # fzf's query buffer unchanged; Enter and Esc remain dedicated controls.
-bindable_keys="$key_down,$key_up,$key_first,$key_last,$key_search,$key_create,$key_new,$key_back,$key_force_create,$key_remove,$key_force_remove,$key_local,$key_remote,$key_both,$key_refresh,$key_quit"
+bindable_keys="$key_down,$key_up,$key_first,$key_last,$key_search,$key_create,$key_new,$key_back,$key_force_create,$key_remove,$key_force_remove,$key_local,$key_remote,$key_both,$key_preview,$key_refresh,$key_quit"
 [[ $key_open == enter ]] || bindable_keys+=",$key_open"
 # Esc and its configurable equivalent remain dedicated controls. The h/l
 # aliases are modal, so search and exact branch input explicitly unbind them.
@@ -1294,11 +1311,12 @@ modal_rebind_actions=$(join_key_actions rebind "$bindable_keys")
 status_action="transform-footer($footer_cmd)"
 chrome_actions="transform-header($header_cmd)+$status_action"
 reload_actions="$chrome_actions+reload($rows_cmd)"
+preview_restore_action="transform($manager_q __preview-restore $state_q)"
 list_normal_actions="clear-query+disable-search+hide-input+rebind(change)+$modal_rebind_actions"
-new_input_actions="show-input+clear-query+disable-search+change-prompt(branch name  )+change-ghost()+unbind(change)+$modal_unbind_actions+$reload_actions"
-source_normal_actions="$list_normal_actions+change-prompt()+change-ghost()+$reload_actions"
-repository_normal_actions="$list_normal_actions+change-prompt()+change-ghost()+$reload_actions"
-manage_normal_actions="$list_normal_actions+change-prompt()+change-ghost()+$reload_actions"
+new_input_actions="hide-preview+show-input+clear-query+disable-search+change-prompt(branch name  )+change-ghost()+unbind(change)+$modal_unbind_actions+$reload_actions"
+source_normal_actions="hide-preview+$list_normal_actions+change-prompt()+change-ghost()+$reload_actions"
+repository_normal_actions="hide-preview+$list_normal_actions+change-prompt()+change-ghost()+$reload_actions"
+manage_normal_actions="$preview_restore_action+$list_normal_actions+change-prompt()+change-ghost()+$reload_actions"
 
 # One Enter binding serves all four screens. Failures update the fixed status
 # area without rebuilding candidates; success aborts fzf so the common Herdr
@@ -1314,6 +1332,7 @@ scope_local="transform:if [[ \$(cat $state_q/mode) = source ]]; then $manager_q 
 scope_remote="transform:if [[ \$(cat $state_q/mode) = source ]]; then $manager_q __scope $state_q remote; echo 'hide-input+change-prompt()+change-ghost()+$reload_actions'; fi"
 scope_both="transform:if [[ \$(cat $state_q/mode) = source ]]; then $manager_q __scope $state_q both; echo 'hide-input+change-prompt()+change-ghost()+$reload_actions'; fi"
 refresh_transition="transform:mode=\$(cat $state_q/mode); case \$mode in manage|repository|source) $manager_q __refresh $state_q; echo '$reload_actions' ;; esac"
+preview_toggle="transform:$manager_q __preview-toggle $state_q"
 quit_transform="transform:[[ \$(cat $state_q/mode) = new ]] || echo abort"
 esc_transform="transform:mode=\$(cat $state_q/mode); search=\$(cat $state_q/search 2>/dev/null || printf false); if [[ \$mode = new ]]; then $manager_q __source-mode $state_q; echo '$source_normal_actions'; elif [[ \$search = true ]]; then $manager_q __search-mode $state_q false; case \$mode in manage) echo '$manage_normal_actions' ;; repository) echo '$repository_normal_actions' ;; source) echo '$source_normal_actions' ;; esac; elif [[ \$mode = source ]]; then $manager_q __repository-mode $state_q; echo '$repository_normal_actions'; elif [[ \$mode = repository ]]; then $manager_q __manage-mode $state_q; echo '$manage_normal_actions'; else echo abort; fi"
 normal_bind_args=(--bind="esc:$esc_transform" --bind="$key_back:$esc_transform")
@@ -1328,6 +1347,7 @@ set +e
 env -u FZF_API_KEY "$fzf_bin" \
     --disabled --with-shell="$bash_q -c" --delimiter=$'\t' --with-nth=3.. \
     --track --id-nth=2 --listen-unsafe="$state_dir/fzf.sock" \
+    --preview="$preview_cmd" --preview-window='right,42%,border-left,nowrap,noinfo,~3,<50(down,40%,border-top)' \
     --header-lines=1 --reverse --info=inline-right --border=none --input-border=bottom --footer-border=none \
     --color='16,fg:-1,bg:-1,gutter:-1,input-bg:-1,list-bg:-1,header-bg:-1,footer-bg:-1,bg+:5,fg+:0:bold,hl:magenta,hl+:0:bold,pointer:-1,prompt:magenta,query:magenta,ghost:bright-black:dim,input-border:bright-black,header:bright-black,footer:bright-black,info:bright-black,disabled:bright-black,spinner:magenta' \
     --no-separator --no-scrollbar --highlight-line --pointer= \
@@ -1337,7 +1357,7 @@ env -u FZF_API_KEY "$fzf_bin" \
     --bind="$key_force_create:$force_transition" \
     --bind="$key_remove:$remove_transform" --bind="$key_force_remove:$force_remove_transform" \
     --bind="$key_local:$scope_local" --bind="$key_remote:$scope_remote" --bind="$key_both:$scope_both" \
-    --bind="$key_refresh:$refresh_transition" --bind="$key_quit:$quit_transform" \
+    --bind="$key_preview:$preview_toggle" --bind="$key_refresh:$refresh_transition" --bind="$key_quit:$quit_transform" \
     --bind="$key_down:down" --bind="$key_up:up" --bind="$key_first:first" --bind="$key_last:last" \
     --bind="$key_search:$search_transition" --bind="load:transform-header($header_cmd)+transform-footer($footer_cmd)" \
     --bind="start:hide-input" --bind="change:clear-query" "${normal_bind_args[@]}" \

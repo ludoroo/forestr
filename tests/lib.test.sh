@@ -83,6 +83,7 @@ PATH=$old_path
 [[ $(forestr_key key_local l) == l ]]
 [[ $(forestr_key key_remote r) == r ]]
 [[ $(forestr_key key_both b) == b ]]
+[[ $(forestr_key key_preview p) == p ]]
 # Uppercase single characters are valid fzf keys for scopes and force actions.
 [[ $(forestr_key key_force_create C) == C ]]
 [[ $(forestr_key key_force_remove D) == D ]]
