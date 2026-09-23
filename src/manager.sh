@@ -1347,7 +1347,7 @@ set +e
 env -u FZF_API_KEY "$fzf_bin" \
     --disabled --with-shell="$bash_q -c" --delimiter=$'\t' --with-nth=3.. \
     --track --id-nth=2 --listen-unsafe="$state_dir/fzf.sock" \
-    --preview="$preview_cmd" --preview-window='right,42%,border-left,nowrap,noinfo,~3,<50(down,40%,border-top)' \
+    --preview="$preview_cmd" --preview-window='right,46%,border-left,nowrap,noinfo,~3,<65(down,40%,border-top)' \
     --header-lines=1 --reverse --info=inline-right --border=none --input-border=bottom --footer-border=none \
     --color='16,fg:-1,bg:-1,gutter:-1,input-bg:-1,list-bg:-1,header-bg:-1,footer-bg:-1,bg+:5,fg+:0:bold,hl:magenta,hl+:0:bold,pointer:-1,prompt:magenta,query:magenta,ghost:bright-black:dim,input-border:bright-black,header:bright-black,footer:bright-black,info:bright-black,disabled:bright-black,spinner:magenta' \
     --no-separator --no-scrollbar --highlight-line --pointer= \

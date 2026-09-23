@@ -66,15 +66,18 @@ repo_name=${fields[5]}
 display_path=${fields[6]}
 preview_columns=${FZF_PREVIEW_COLUMNS:-80}
 [[ $preview_columns =~ ^[0-9]+$ ]] || preview_columns=80
-if ((preview_columns >= 44)); then
+((preview_columns >= 44)) || preview_columns=44
+changes_width=13
+if ((preview_columns >= 72)); then
+    show_author=true
     author_width=14
     age_width=12
-    subject_width=$((preview_columns - 40))
+    subject_width=$((preview_columns - 55))
 else
-    ((preview_columns >= 32)) || preview_columns=32
-    author_width=8
-    age_width=8
-    subject_width=$((preview_columns - 30))
+    show_author=false
+    author_width=0
+    age_width=10
+    subject_width=$((preview_columns - 37))
 fi
 
 canonical_path=$(canonical_directory "$path" || true)
@@ -118,13 +121,19 @@ fi
 
 printf '\033[1;35mCOMMITS\033[0m  \033[1m%s / %s\033[0m\n' "$repo_name" "$label"
 printf '\033[2m%s\033[0m\n' "$display_path"
-printf '\033[35m%-8s\033[0m  \033[2m%-*s  %-*s  %*s\033[0m\n' \
-    COMMIT "$subject_width" SUBJECT "$author_width" AUTHOR "$age_width" WHEN
-if ! "$git_bin" -c i18n.logOutputEncoding=UTF-8 -C "$canonical_path" --no-pager \
+if $show_author; then
+    printf '\033[35m%-8s\033[0m  \033[2m%-*s  %-*s  %*s  %*s\033[0m\n' \
+        COMMIT "$subject_width" SUBJECT "$author_width" AUTHOR "$age_width" WHEN "$changes_width" CHANGES
+else
+    printf '\033[35m%-8s\033[0m  \033[2m%-*s  %*s  %*s\033[0m\n' \
+        COMMIT "$subject_width" SUBJECT "$age_width" WHEN "$changes_width" CHANGES
+fi
+if ! LC_ALL=C "$git_bin" -c i18n.logOutputEncoding=UTF-8 -C "$canonical_path" --no-pager \
     log HEAD --max-count=25 --date=relative --no-show-signature --color=never \
-    --pretty=format:'%h%n%s%n%an%n%ar' 2>/dev/null \
+    --shortstat --no-renames --pretty=format:'%x1e%h%x1f%s%x1f%an%x1f%ar' 2>/dev/null \
     | "$jq_bin" -Rrs --argjson subject_width "$subject_width" \
-        --argjson author_width "$author_width" --argjson age_width "$age_width" '
+        --argjson author_width "$author_width" --argjson age_width "$age_width" \
+        --argjson changes_width "$changes_width" --argjson show_author "$show_author" '
             def clean:
                 gsub("[\u0000-\u001F\u007F-\u009F\u061C\u200E-\u200F\u202A-\u202E\u2066-\u2069]"; " ");
             def codepoint_width:
@@ -154,17 +163,30 @@ if ! "$git_bin" -c i18n.logOutputEncoding=UTF-8 -C "$canonical_path" --no-pager 
             def fit_right($width):
                 clean | truncate($width) as $value |
                 (" " * ($width - ($value | display_width))) + $value;
+            def compact_count:
+                if . >= 1000000 then (((. / 100000) | round) / 10 | tostring) + "m"
+                elif . >= 1000 then (((. / 100) | round) / 10 | tostring) + "k"
+                else tostring end;
             if length == 0 then empty else
-            split("\n") as $lines |
-            range(0; ($lines | length); 4) as $index |
-            ($lines[$index] // "" | fit(8)) as $hash |
-            ($lines[$index + 1] // "" | fit($subject_width)) as $subject |
-            ($lines[$index + 2] // "" | fit($author_width)) as $author |
-            ($lines[$index + 3] // "" | fit_right($age_width)) as $age |
+            split("\u001e")[] | select(length > 0) as $record |
+            ($record | split("\n")[0] | split("\u001f")) as $metadata |
+            select(($metadata | length) >= 4 and ($metadata[0] | test("^[0-9a-f]+$"))) |
+            ($metadata[0] | fit(8)) as $hash |
+            ($metadata[1:-2] | join(" ") | fit($subject_width)) as $subject |
+            ($metadata[-2] | fit($author_width)) as $author |
+            ($metadata[-1] | fit_right($age_width)) as $age |
+            ($record | ([scan("([0-9]+) insertion")][0][0] // "0") | tonumber) as $additions |
+            ($record | ([scan("([0-9]+) deletion")][0][0] // "0") | tonumber) as $deletions |
+            (if $additions == 0 and $deletions == 0 then
+                "\u001b[2m" + ("—" | fit_right($changes_width)) + "\u001b[0m"
+             else
+                "\u001b[32m" + (("+" + ($additions | compact_count)) | fit_right(6)) + "\u001b[0m " +
+                "\u001b[31m" + (("-" + ($deletions | compact_count)) | fit_right(6)) + "\u001b[0m"
+             end) as $changes |
             "\u001b[1;35m" + $hash + "\u001b[0m  " +
             "\u001b[1m" + $subject + "\u001b[0m  " +
-            "\u001b[36m" + $author + "\u001b[0m  " +
-            "\u001b[2m" + $age + "\u001b[0m"
+            (if $show_author then "\u001b[36m" + $author + "\u001b[0m  " else "" end) +
+            "\u001b[2m" + $age + "\u001b[0m  " + $changes
             end
         '; then
     printf '\033[2mNo commits yet.\033[0m\n'

@@ -74,7 +74,7 @@ The budget covers Worktrunk's collection phase. If broader `wt list` setup stall
 
 The initial active-repository row is rendered before global Herdr discovery finishes. Refresh work is generation-scoped, and stale background output cannot replace a newer snapshot. Operation results use a fixed two-row footer status area, so their fzf transforms do not synchronously rebuild the candidate list. Successful removals hide the selected row immediately; background discovery may later reload candidates to reconcile partial mutations and authoritative state.
 
-The manager shows a bounded commit-log preview for the selected worktree. It follows only that worktree's `HEAD` ancestry—never `--all`—uses one line per commit, and is capped at 25 commits to remain readable in busy repositories. Press `p` to toggle it. The preview moves below the list when the side panel would be too narrow and stays hidden in the create wizard.
+The manager shows a bounded commit-log preview for the selected worktree. It follows only that worktree's `HEAD` ancestry—never `--all`—uses one fixed-width line per commit, and is capped at 25 commits to remain readable in busy repositories. Change statistics are compacted (for example, `4k`) and the author column is omitted when space is tight. Press `p` to toggle the preview. It moves below the list when the side panel would be too narrow and stays hidden in the create wizard.
 
 ## Git safety
 

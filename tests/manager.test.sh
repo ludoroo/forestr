@@ -54,6 +54,24 @@ for i in {1..27}; do
     "$git_bin" -C "$feature_a" -c user.name=Test -c user.email=test@example.com \
         commit -q --allow-empty -m "feature preview $i"
 done
+python3 - "$feature_a/preview-stats.txt" <<'PY'
+import sys
+
+with open(sys.argv[1], "w") as output:
+    output.writelines(f"line {index}\n" for index in range(4000))
+PY
+"$git_bin" -C "$feature_a" add preview-stats.txt
+"$git_bin" -C "$feature_a" -c user.name=Test -c user.email=test@example.com \
+    commit -q -m 'large preview stats'
+python3 - "$feature_a/preview-stats.txt" <<'PY'
+import sys
+
+with open(sys.argv[1], "w") as output:
+    output.writelines(f"line {index}\n" for index in range(123, 4000))
+PY
+"$git_bin" -C "$feature_a" add preview-stats.txt
+"$git_bin" -C "$feature_a" -c user.name=Test -c user.email=test@example.com \
+    commit -q -m 'preview deletions'
 "$git_bin" -C "$feature_a" -c user.name=Test -c user.email=test@example.com \
     commit -q --allow-empty -m 'unicode 日本 preview'
 "$git_bin" -C "$feature_a" -c user.name=Test -c user.email=test@example.com \
@@ -474,6 +492,8 @@ grep -Fq "$feature_a" "$tmp/preview"
 grep -Fq 'unsafe' "$tmp/preview"
 grep -Fq 'feature preview 27' "$tmp/preview"
 grep -Fq 'unicode 日本 preview' "$tmp/preview"
+grep -Fq '+4k' "$tmp/preview"
+grep -Fq -- '-123' "$tmp/preview"
 ! grep -Fq 'main-only preview exclusion' "$tmp/preview"
 [[ $(tail -n +4 "$tmp/preview" | wc -l | tr -d ' ') -eq 25 ]]
 python3 - "$tmp/preview" <<'PY'
@@ -503,6 +523,7 @@ FORESTR_GIT_BIN="$git_bin" JQ_BIN="$jq_bin" bash "$plugin_root/preview.sh" \
 [[ $(sed -n '1p' "$tmp/header-preview") == *'repo spoof / branch  spoof'* ]]
 grep -Fq 'COMMIT' < <(sed -n '3p' "$tmp/header-preview")
 grep -Fq 'SUBJECT' < <(sed -n '3p' "$tmp/header-preview")
+grep -Fq 'CHANGES' < <(sed -n '3p' "$tmp/header-preview")
 missing_preview_payload=$("$jq_bin" -Rnr --arg p "$feature_payload" --arg path "$tmp/missing-preview" \
     '$p|@base64d|fromjson|.path=$path|.canonical_path=$path|tojson|@base64')
 FORESTR_GIT_BIN="$git_bin" JQ_BIN="$jq_bin" bash "$plugin_root/preview.sh" \
@@ -537,7 +558,7 @@ grep -Fq -- 'bash -c' "$TEST_FZF_ARGS"
 grep -Fq -- '--header-lines=1' "$TEST_FZF_ARGS"
 grep -Fq -- '--preview=' "$TEST_FZF_ARGS"
 grep -Fq 'preview.sh {1}' "$TEST_FZF_ARGS"
-grep -Fxq -- '--preview-window=right,42%,border-left,nowrap,noinfo,~3,<50(down,40%,border-top)' "$TEST_FZF_ARGS"
+grep -Fxq -- '--preview-window=right,46%,border-left,nowrap,noinfo,~3,<65(down,40%,border-top)' "$TEST_FZF_ARGS"
 grep -Fq -- '--bind=p:transform:' "$TEST_FZF_ARGS"
 grep -Fq '__preview-toggle' "$TEST_FZF_ARGS"
 grep -Fq '__preview-restore' "$TEST_FZF_ARGS"
