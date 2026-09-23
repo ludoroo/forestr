@@ -50,12 +50,11 @@ while IFS= read -r -d '' field; do fields+=("$field"); done < <(
             ($selection.repo_root // ""),
             ($selection.repo_key // ""),
             (($selection.label // $selection.target // "worktree") | clean_header),
-            (($selection.repo_name // "repository") | clean_header),
-            (($selection.canonical_path // $selection.path // "") | clean_header)
+            (($selection.repo_name // "repository") | clean_header)
         ] | .[] | ., "\u0000"
     ' 2>/dev/null
 )
-((${#fields[@]} == 7)) || exit 0
+((${#fields[@]} == 6)) || exit 0
 kind=${fields[0]}
 [[ $kind == main || $kind == worktree ]] || exit 0
 path=${fields[1]}
@@ -63,7 +62,6 @@ repo_root=${fields[2]}
 repo_key=${fields[3]}
 label=${fields[4]}
 repo_name=${fields[5]}
-display_path=${fields[6]}
 preview_columns=${FZF_PREVIEW_COLUMNS:-80}
 [[ $preview_columns =~ ^[0-9]+$ ]] || preview_columns=80
 ((preview_columns >= 44)) || preview_columns=44
@@ -119,8 +117,7 @@ if $use_root_fallback; then
     fi
 fi
 
-printf '\033[1;35mCOMMITS\033[0m  \033[1m%s / %s\033[0m\n' "$repo_name" "$label"
-printf '\033[2m%s\033[0m\n' "$display_path"
+printf '\033[1m%s\033[0m \033[2m/\033[0m \033[1;35m%s\033[0m\n' "$repo_name" "$label"
 if $show_author; then
     printf '\033[35m%-8s\033[0m  \033[2m%-*s  %-*s  %*s  %*s\033[0m\n' \
         COMMIT "$subject_width" SUBJECT "$author_width" AUTHOR "$age_width" WHEN "$changes_width" CHANGES
@@ -147,14 +144,19 @@ if ! LC_ALL=C "$git_bin" -c i18n.logOutputEncoding=UTF-8 -C "$canonical_path" --
                     or (. >= 65281 and . <= 65376) or (. >= 65504 and . <= 65510)
                     or (. >= 127744 and . <= 129535) or (. >= 131072 and . <= 196605) then 2
                 else 1 end;
-            def display_width: explode | map(codepoint_width) | add // 0;
+            def grapheme_width:
+                explode as $codepoints |
+                if ([$codepoints[] | select(. >= 127462 and . <= 127487)] | length) >= 2 then 2
+                elif any($codepoints[]; . == 65039 or . == 8419) then 2
+                else [$codepoints[] | codepoint_width] | max // 0 end;
+            def display_width: [scan("\\X") | grapheme_width] | add // 0;
             def take_width($width):
-                reduce (explode[]) as $codepoint
-                    ({text: [], width: 0, full: true}; ($codepoint | codepoint_width) as $next_width |
+                reduce (scan("\\X")) as $grapheme
+                    ({text: "", width: 0, full: true}; ($grapheme | grapheme_width) as $next_width |
                      if .full and (.width + $next_width <= $width) then
-                         .text += [$codepoint] | .width += $next_width
+                         .text += $grapheme | .width += $next_width
                      else .full = false end) |
-                .text | implode;
+                .text;
             def truncate($width):
                 if display_width > $width then take_width($width - 1) + "…" else . end;
             def fit($width):

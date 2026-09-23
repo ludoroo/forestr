@@ -25,6 +25,38 @@ enrich_backend = true
 worktrunk_enrichment_collection_timeout_ms = 5000
 worktrunk_enrichment_concurrency = 2
 
+# Worktrunk status icons. Forestr preserves Worktrunk's seven aligned positions:
+# three working-tree flags, worktree condition, default branch, remote, and marker.
+# The final marker is managed separately with `wt config state marker`.
+# Use single-cell glyphs for overrides; values are clipped to their fixed slot.
+status_icon_unresolved = "·"
+# Working-tree flags
+status_icon_staged = "+"
+status_icon_modified = "!"
+status_icon_untracked = "?"
+# Worktree conditions
+status_icon_conflicted = "✘"
+status_icon_operation = "↻"
+status_icon_prunable = "⊟"
+status_icon_locked = "⊞"
+status_icon_detached = "⊘"
+status_icon_warning = "⚑"
+# Default-branch relationship
+status_icon_main = "^"
+status_icon_orphan = "∅"
+status_icon_empty = "_"
+status_icon_integrated = "⊂"
+status_icon_would_conflict = "✗"
+status_icon_same_commit = "–"
+status_icon_diverged = "↕"
+status_icon_ahead = "↑"
+status_icon_behind = "↓"
+# Tracking-branch relationship
+status_icon_remote_synced = "|"
+status_icon_remote_ahead = "⇡"
+status_icon_remote_behind = "⇣"
+status_icon_remote_diverged = "⇅"
+
 # Modal navigation and actions. Values may be one alphanumeric character, /,
 # ?, ., enter, esc, home, end, ctrl-a..ctrl-z, or alt-a..alt-z. Keys must be
 # unique; esc remains reserved for modal navigation.

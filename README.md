@@ -68,7 +68,7 @@ The create wizard is repository-first: choose a repository, then choose an exist
 `backend = "auto"` is the default. It selects Worktrunk when an executable `wt` is available and otherwise uses native Git. Set `backend = "git"` or `backend = "worktrunk"` to make selection explicit.
 
 - **Git:** uses Git porcelain directly. It opens existing worktrees, materializes exact local or remote branches, creates new branches, and removes selected secondary worktrees. New checkout paths are siblings of the primary checkout, named `.<repository>-<sanitized-branch>`.
-- **Worktrunk:** delegates switch/create/remove semantics to `wt`. Enrichment adds Worktrunk head and status symbols in the background and passes its collection budget to Worktrunk's built-in `list.timeout-ms` setting. It can be disabled with `enrich_backend = false`.
+- **Worktrunk:** delegates switch/create/remove semantics to `wt`. Enrichment adds Worktrunk head and status data in the background and passes its collection budget to Worktrunk's built-in `list.timeout-ms` setting. Status symbols retain Worktrunk's seven aligned positions—three working-tree flags, worktree condition, default branch, remote, and marker—and each semantic icon can be overridden with the `status_icon_*` settings in [`config.example.toml`](config.example.toml). The final marker remains branch data managed by `wt config state marker`. Enrichment can be disabled with `enrich_backend = false`.
 
 The budget covers Worktrunk's collection phase. If broader `wt list` setup stalls, the existing Git rows remain usable; refreshing or closing the popup terminates the background producer.
 

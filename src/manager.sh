@@ -70,6 +70,47 @@ enrich_backend=$FORESTR_BACKEND_ENRICH
 enrichment_collection_timeout_ms=$FORESTR_BACKEND_ENRICHMENT_COLLECTION_TIMEOUT_MS
 enrichment_concurrency=$FORESTR_BACKEND_ENRICHMENT_CONCURRENCY
 
+forestr_load_config
+status_icon_staged=${FORESTR_CONFIG_VALUES[status_icon_staged]:-+}
+status_icon_modified=${FORESTR_CONFIG_VALUES[status_icon_modified]:-!}
+status_icon_untracked=${FORESTR_CONFIG_VALUES[status_icon_untracked]:-?}
+status_icon_unresolved=${FORESTR_CONFIG_VALUES[status_icon_unresolved]:-·}
+status_icon_conflicted=${FORESTR_CONFIG_VALUES[status_icon_conflicted]:-✘}
+status_icon_operation=${FORESTR_CONFIG_VALUES[status_icon_operation]:-↻}
+status_icon_prunable=${FORESTR_CONFIG_VALUES[status_icon_prunable]:-⊟}
+status_icon_locked=${FORESTR_CONFIG_VALUES[status_icon_locked]:-⊞}
+status_icon_detached=${FORESTR_CONFIG_VALUES[status_icon_detached]:-⊘}
+status_icon_warning=${FORESTR_CONFIG_VALUES[status_icon_warning]:-⚑}
+status_icon_main=${FORESTR_CONFIG_VALUES[status_icon_main]:-^}
+status_icon_orphan=${FORESTR_CONFIG_VALUES[status_icon_orphan]:-∅}
+status_icon_empty=${FORESTR_CONFIG_VALUES[status_icon_empty]:-_}
+status_icon_integrated=${FORESTR_CONFIG_VALUES[status_icon_integrated]:-⊂}
+status_icon_would_conflict=${FORESTR_CONFIG_VALUES[status_icon_would_conflict]:-✗}
+status_icon_same_commit=${FORESTR_CONFIG_VALUES[status_icon_same_commit]:-–}
+status_icon_diverged=${FORESTR_CONFIG_VALUES[status_icon_diverged]:-↕}
+status_icon_ahead=${FORESTR_CONFIG_VALUES[status_icon_ahead]:-↑}
+status_icon_behind=${FORESTR_CONFIG_VALUES[status_icon_behind]:-↓}
+status_icon_remote_synced=${FORESTR_CONFIG_VALUES[status_icon_remote_synced]:-|}
+status_icon_remote_ahead=${FORESTR_CONFIG_VALUES[status_icon_remote_ahead]:-⇡}
+status_icon_remote_behind=${FORESTR_CONFIG_VALUES[status_icon_remote_behind]:-⇣}
+status_icon_remote_diverged=${FORESTR_CONFIG_VALUES[status_icon_remote_diverged]:-⇅}
+status_icons_json=$($jq_bin -cn \
+    --arg staged "$status_icon_staged" --arg modified "$status_icon_modified" --arg untracked "$status_icon_untracked" \
+    --arg unresolved "$status_icon_unresolved" --arg conflicted "$status_icon_conflicted" --arg operation "$status_icon_operation" \
+    --arg prunable "$status_icon_prunable" --arg locked "$status_icon_locked" --arg detached "$status_icon_detached" \
+    --arg warning "$status_icon_warning" --arg main "$status_icon_main" --arg orphan "$status_icon_orphan" \
+    --arg empty "$status_icon_empty" --arg integrated "$status_icon_integrated" \
+    --arg would_conflict "$status_icon_would_conflict" --arg same_commit "$status_icon_same_commit" \
+    --arg diverged "$status_icon_diverged" --arg ahead "$status_icon_ahead" --arg behind "$status_icon_behind" \
+    --arg remote_synced "$status_icon_remote_synced" --arg remote_ahead "$status_icon_remote_ahead" \
+    --arg remote_behind "$status_icon_remote_behind" --arg remote_diverged "$status_icon_remote_diverged" \
+    '{staged:$staged,modified:$modified,untracked:$untracked,unresolved:$unresolved,
+      conflicted:$conflicted,operation:$operation,
+      prunable:$prunable,locked:$locked,detached:$detached,warning:$warning,main:$main,orphan:$orphan,
+      empty:$empty,integrated:$integrated,would_conflict:$would_conflict,same_commit:$same_commit,
+      diverged:$diverged,ahead:$ahead,behind:$behind,remote_synced:$remote_synced,
+      remote_ahead:$remote_ahead,remote_behind:$remote_behind,remote_diverged:$remote_diverged}')
+
 pause_after_error() {
     # Worker actions run with no terminal. Only offer an interactive pause when
     # this function is used by a genuine foreground invocation.
@@ -179,11 +220,17 @@ table_jq_defs='
             or (. >= 65281 and . <= 65376) or (. >= 65504 and . <= 65510)
             or (. >= 127744 and . <= 129535) or (. >= 131072 and . <= 196605) then 2
         else 1 end;
-    def display_width: explode | map(codepoint_width) | add // 0;
-    def take_width(n): reduce (explode[]) as $cp
-        ({text: [], width: 0, full: true}; ($cp | codepoint_width) as $width
-         | if .full and (.width + $width <= n) then .text += [$cp] | .width += $width else .full = false end)
-        | .text | implode;
+    def grapheme_width:
+        explode as $codepoints
+        | if ([$codepoints[] | select(. >= 127462 and . <= 127487)] | length) >= 2 then 2
+          elif any($codepoints[]; . == 65039 or . == 8419) then 2
+          else [$codepoints[] | codepoint_width] | max // 0 end;
+    def display_width: [scan("\\X") | grapheme_width] | add // 0;
+    def take_width(n): reduce (scan("\\X")) as $grapheme
+        ({text: "", width: 0, full: true}; ($grapheme | grapheme_width) as $width
+         | if .full and (.width + $width <= n)
+           then .text += $grapheme | .width += $width else .full = false end)
+        | .text;
     def pad(n): tostring as $text | ($text | display_width) as $width
         | if $width >= n then $text else $text + ([range(n - $width)] | map(" ") | join("")) end;
     def trunc(n): tostring as $text
@@ -206,6 +253,36 @@ render_row() {
         --arg home "${HOME:-}" "$table_jq_defs"'
         [$payload, $identity, ([$marker, ($repo | cell(18)), ($target | cell(34)), ($state | cell(10)),
                     ($head | cell(10)), ($path | tilde($home))] | join(" "))] | @tsv'
+}
+
+render_worktrunk_status() {
+    local item=$1
+    "$jq_bin" -r --argjson icons "$status_icons_json" "$table_jq_defs"'
+        if (.status | type) != "object" then (.symbols // "")
+        else
+            .status as $status |
+            def flag($value; $icon):
+                (if $value == null then $icons.unresolved
+                 elif $value then $icon else "" end) | cell(1);
+            (($status.staged == null and $status.modified == null and $status.untracked == null)) as $changes_unresolved |
+            ((if $changes_unresolved then $icons.unresolved | cell(1)
+              else flag($status.staged; $icons.staged) end)) as $staged |
+            ((if $changes_unresolved then "" | cell(1)
+              else flag($status.modified; $icons.modified) end)) as $modified |
+            ((if $changes_unresolved then "" | cell(1)
+              else flag($status.untracked; $icons.untracked) end)) as $untracked |
+            ((if $status.worktree_state == "unresolved" then $icons.unresolved
+              else ($icons[$status.worktree_state] // "") end) | cell(1)) as $worktree |
+            ((if $status.branch_state == "unresolved" then $icons.unresolved
+              elif $status.branch_state == "is_main" then $icons.main
+              else ($icons[$status.branch_state] // "") end) | cell(1)) as $branch |
+            ((if $status.remote_state == "unresolved" then $icons.unresolved
+              else ($icons["remote_" + $status.remote_state] // "") end) | cell(1)) as $remote |
+            ((if $status.marker == null then $icons.unresolved
+              else $status.marker end) | cell(2)) as $marker |
+            $staged + $modified + $untracked + $worktree + $branch + $remote + $marker
+        end
+    ' <<<"$item"
 }
 
 # Parse Git's NUL-delimited porcelain format. This keeps spaces, tabs and other
@@ -668,13 +745,15 @@ enriched_rows_for_repository() {
         current_path=$("$jq_bin" -r '.canonical_path // .path' <<<"$row")
         encoded=${by_path[$current_path]:-}; [[ -n $encoded ]] || continue
         item=$("$jq_bin" -Rnr --arg i "$encoded" '$i|@base64d|fromjson')
-        merged=$("$jq_bin" -cn --argjson row "$row" --argjson backend_item "$item" '
+        state=$(render_worktrunk_status "$item")
+        merged=$("$jq_bin" -cn --argjson row "$row" --argjson backend_item "$item" --arg backend_state "$state" '
             $row + {
               target: (if $backend_item.branch == "" then $row.target else $backend_item.branch end),
               "label": (if $backend_item.branch == "" then $row.label else $backend_item.branch end),
               head: (if $backend_item.head == "" then $row.head else $backend_item.head end),
-              state: ([$backend_item.symbols, ($row.state // empty)]
-                      | map(select(length > 0)) | unique | join(","))
+              state: (if ($backend_item.status | type) == "object" then $backend_state
+                      else ([$backend_state, ($row.state // empty)]
+                            | map(select(length > 0)) | unique | join(",")) end)
             }')
         payload=$(printf '%s' "$merged" | base64 | tr -d '\n')
         marker=$("$jq_bin" -r '.marker' <<<"$merged"); repo_name=$("$jq_bin" -r '.repo_name' <<<"$merged")
@@ -1059,6 +1138,10 @@ case ${1:-} in
     __footer)
         render_footer "$2"; exit 0
         ;;
+    __worktrunk-status)
+        item=${2:-}; [[ -n $item ]] || item='{}'
+        render_worktrunk_status "$item"; exit 0
+        ;;
     __preview-toggle)
         state_dir=$2
         if [[ $(cat "$state_dir/mode" 2>/dev/null || printf manage) != manage ]]; then exit 0; fi
@@ -1347,7 +1430,7 @@ set +e
 env -u FZF_API_KEY "$fzf_bin" \
     --disabled --with-shell="$bash_q -c" --delimiter=$'\t' --with-nth=3.. \
     --track --id-nth=2 --listen-unsafe="$state_dir/fzf.sock" \
-    --preview="$preview_cmd" --preview-window='right,46%,border-left,nowrap,noinfo,~3,<65(down,40%,border-top)' \
+    --preview="$preview_cmd" --preview-window='right,46%,border-left,nowrap,noinfo,~2,<65(down,40%,border-top)' \
     --header-lines=1 --reverse --info=inline-right --border=none --input-border=bottom --footer-border=none \
     --color='16,fg:-1,bg:-1,gutter:-1,input-bg:-1,list-bg:-1,header-bg:-1,footer-bg:-1,bg+:5,fg+:0:bold,hl:magenta,hl+:0:bold,pointer:-1,prompt:magenta,query:magenta,ghost:bright-black:dim,input-border:bright-black,header:bright-black,footer:bright-black,info:bright-black,disabled:bright-black,spinner:magenta' \
     --no-separator --no-scrollbar --highlight-line --pointer= \

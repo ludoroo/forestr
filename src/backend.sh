@@ -110,7 +110,15 @@ backend_validate_result() {
              (.items | type == "array") and all(.items[];
                (.path | type == "string" and length > 0)
                and (.branch | type == "string") and (.head | type == "string")
-               and (.symbols | type == "string"))
+               and (.symbols | type == "string")
+               and ((.status // null) == null or
+                 ((.status.staged | type | IN("boolean", "null"))
+                  and (.status.modified | type | IN("boolean", "null"))
+                  and (.status.untracked | type | IN("boolean", "null"))
+                  and (.status.worktree_state | type == "string")
+                  and (.status.branch_state | type == "string")
+                  and (.status.remote_state | type == "string")
+                  and (.status.marker | type | IN("string", "null")))))
            else false end)
     ' >/dev/null 2>&1 <<<"$result"
 }

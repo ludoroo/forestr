@@ -75,6 +75,8 @@ PY
 "$git_bin" -C "$feature_a" -c user.name=Test -c user.email=test@example.com \
     commit -q --allow-empty -m 'unicode 日本 preview'
 "$git_bin" -C "$feature_a" -c user.name=Test -c user.email=test@example.com \
+    commit -q --allow-empty -m 'flag 🇦🇺 preview'
+"$git_bin" -C "$feature_a" -c user.name=Test -c user.email=test@example.com \
     commit -q --allow-empty -m $'unsafe \033]8;;https://example.invalid\a subject'
 "$git_bin" -C "$repo_a" config log.showSignature true
 head_a=$("$git_bin" -C "$repo_a" rev-parse HEAD)
@@ -134,7 +136,7 @@ if [[ " $* " == *' list '* ]]; then
         cat <<JSON
 {"schema":2,"items":[
  {"branch":"main","head":{"short_sha":"enriched1"},"worktree":{"path":"$TEST_REPO_A"},"display":{"state":"is_main","symbols":"^"}},
- {"branch":"feature-a","head":{"short_sha":"enriched2"},"worktree":{"path":"$TEST_FEATURE_A","changes":{"modified":true}},"display":{"state":"ahead","symbols":"!↑"}}
+ {"branch":"feature-a","head":{"short_sha":"enriched2"},"worktree":{"path":"$TEST_FEATURE_A","locked":true,"changes":{"staged":false,"modified":true,"untracked":false,"conflicted":false}},"marker":"👩🏽‍💻","display":{"state":"ahead","symbols":"!⊞↑👩🏽‍💻"}}
 ]}
 JSON
     else
@@ -484,28 +486,58 @@ grep -Fq "$feature_a" "$TEST_CANDIDATES"
 # Full unusual paths survive in the hidden payload.
 feature_payload=$(payload_for ' feature-a ' "$TEST_CANDIDATES")
 [[ $("$jq_bin" -Rnr --arg p "$feature_payload" '$p|@base64d|fromjson|.path') == "$feature_a" ]]
+status_item='{"status":{"staged":false,"modified":true,"untracked":true,"worktree_state":"warning","branch_state":"ahead","remote_state":"ahead","marker":"💬"}}'
+[[ $(bash "$plugin_root/manager.sh" __worktrunk-status "$status_item") == ' !?⚑↑⇡💬' ]]
+for flag_case in \
+    'true false false|+     💬' \
+    'false true false| !    💬' \
+    'false false true|  ?   💬'; do
+    IFS='|' read -r flags expected_status <<<"$flag_case"
+    read -r staged modified untracked <<<"$flags"
+    flag_item=$("$jq_bin" -cn --argjson staged "$staged" --argjson modified "$modified" \
+        --argjson untracked "$untracked" '{status:{staged:$staged,modified:$modified,untracked:$untracked,
+        worktree_state:"",branch_state:"",remote_state:"",marker:"💬"}}')
+    [[ $(bash "$plugin_root/manager.sh" __worktrunk-status "$flag_item") == "$expected_status" ]]
+done
+unresolved_status='{"status":{"staged":null,"modified":null,"untracked":null,"worktree_state":"unresolved","branch_state":"unresolved","remote_state":"unresolved","marker":null}}'
+[[ $(bash "$plugin_root/manager.sh" __worktrunk-status "$unresolved_status") == $'·  ···· ' ]]
+emoji_status='{"status":{"staged":false,"modified":false,"untracked":false,"worktree_state":"","branch_state":"","remote_state":"","marker":"👩🏽‍💻"}}'
+[[ $(bash "$plugin_root/manager.sh" __worktrunk-status "$emoji_status") == '      👩🏽‍💻' ]]
+flag_status='{"status":{"staged":false,"modified":false,"untracked":false,"worktree_state":"","branch_state":"","remote_state":"","marker":"🇦🇺"}}'
+[[ $(bash "$plugin_root/manager.sh" __worktrunk-status "$flag_status") == '      🇦🇺' ]]
+icon_config="$tmp/icon-config"; mkdir "$icon_config"
+cat >"$icon_config/config.toml" <<'EOF'
+status_icon_modified = "M"
+status_icon_untracked = "U"
+status_icon_warning = "W"
+status_icon_ahead = "A"
+status_icon_remote_ahead = "R"
+EOF
+[[ $(HERDR_PLUGIN_CONFIG_DIR="$icon_config" bash "$plugin_root/manager.sh" __worktrunk-status "$status_item") == ' MUWAR💬' ]]
 FORESTR_GIT_BIN="$git_bin" JQ_BIN="$jq_bin" HERDR_BIN="$tmp/missing-herdr" \
     FZF_BIN="$tmp/missing-fzf" CURL_BIN="$tmp/missing-curl" WORKTRUNK_BIN="$tmp/missing-wt" \
     bash "$plugin_root/preview.sh" "$feature_payload" >"$tmp/preview"
-grep -Fq 'repo a / feature-a' "$tmp/preview"
-grep -Fq "$feature_a" "$tmp/preview"
+preview_title=$(sed -n $'1s/\033\\[[0-9;]*m//gp' "$tmp/preview")
+[[ $preview_title == 'repo a / feature-a' ]]
+! grep -Fq "$feature_a" "$tmp/preview"
 grep -Fq 'unsafe' "$tmp/preview"
 grep -Fq 'feature preview 27' "$tmp/preview"
 grep -Fq 'unicode 日本 preview' "$tmp/preview"
+grep -Fq 'flag 🇦🇺 preview' "$tmp/preview"
 grep -Fq '+4k' "$tmp/preview"
 grep -Fq -- '-123' "$tmp/preview"
 ! grep -Fq 'main-only preview exclusion' "$tmp/preview"
-[[ $(tail -n +4 "$tmp/preview" | wc -l | tr -d ' ') -eq 25 ]]
+[[ $(tail -n +3 "$tmp/preview" | wc -l | tr -d ' ') -eq 25 ]]
 python3 - "$tmp/preview" <<'PY'
 import re
 import sys
 import unicodedata
 
 raw = open(sys.argv[1], "rb").read()
-assert b"\x1b[1;35mCOMMITS" in raw
+assert b"\x1b[1;35mfeature-a" in raw
 assert b"\x1b[36m" in raw
 ansi = re.compile(rb"\x1b\[[0-9;]*m")
-log_lines = raw.split(b"\n")[3:]
+log_lines = raw.split(b"\n")[2:]
 plain = [ansi.sub(b"", line).decode("utf-8") for line in log_lines if line]
 assert len(plain) == 25, len(plain)
 
@@ -520,10 +552,11 @@ header_payload=$("$jq_bin" -Rnr --arg p "$feature_payload" \
     '$p|@base64d|fromjson|.repo_name="repo\nspoof"|.label="branch\u061c\nspoof"|tojson|@base64')
 FORESTR_GIT_BIN="$git_bin" JQ_BIN="$jq_bin" bash "$plugin_root/preview.sh" \
     "$header_payload" >"$tmp/header-preview"
-[[ $(sed -n '1p' "$tmp/header-preview") == *'repo spoof / branch  spoof'* ]]
-grep -Fq 'COMMIT' < <(sed -n '3p' "$tmp/header-preview")
-grep -Fq 'SUBJECT' < <(sed -n '3p' "$tmp/header-preview")
-grep -Fq 'CHANGES' < <(sed -n '3p' "$tmp/header-preview")
+header_title=$(sed -n $'1s/\033\\[[0-9;]*m//gp' "$tmp/header-preview")
+[[ $header_title == 'repo spoof / branch  spoof' ]]
+grep -Fq 'COMMIT' < <(sed -n '2p' "$tmp/header-preview")
+grep -Fq 'SUBJECT' < <(sed -n '2p' "$tmp/header-preview")
+grep -Fq 'CHANGES' < <(sed -n '2p' "$tmp/header-preview")
 missing_preview_payload=$("$jq_bin" -Rnr --arg p "$feature_payload" --arg path "$tmp/missing-preview" \
     '$p|@base64d|fromjson|.path=$path|.canonical_path=$path|tojson|@base64')
 FORESTR_GIT_BIN="$git_bin" JQ_BIN="$jq_bin" bash "$plugin_root/preview.sh" \
@@ -549,7 +582,8 @@ feature_b_payload=$(payload_for ' feature-b ' "$TEST_CANDIDATES")
 [[ $("$jq_bin" -Rnr --arg p "$feature_b_payload" '$p|@base64d|fromjson|.repo_key') == "$repo_b" ]]
 FORESTR_GIT_BIN="$git_bin" JQ_BIN="$jq_bin" bash "$plugin_root/preview.sh" \
     "$feature_b_payload" >"$tmp/fallback-key-preview"
-grep -Fq 'repo-b / feature-b' "$tmp/fallback-key-preview"
+fallback_title=$(sed -n $'1s/\033\\[[0-9;]*m//gp' "$tmp/fallback-key-preview")
+[[ $fallback_title == 'repo-b / feature-b' ]]
 grep -Fq 'initial' "$tmp/fallback-key-preview"
 # Terminal-inherited styling and display-width table behavior remain configured.
 grep -Fq -- '--color=16,fg:-1,bg:-1,gutter:-1' "$TEST_FZF_ARGS"
@@ -558,7 +592,7 @@ grep -Fq -- 'bash -c' "$TEST_FZF_ARGS"
 grep -Fq -- '--header-lines=1' "$TEST_FZF_ARGS"
 grep -Fq -- '--preview=' "$TEST_FZF_ARGS"
 grep -Fq 'preview.sh {1}' "$TEST_FZF_ARGS"
-grep -Fxq -- '--preview-window=right,46%,border-left,nowrap,noinfo,~3,<65(down,40%,border-top)' "$TEST_FZF_ARGS"
+grep -Fxq -- '--preview-window=right,46%,border-left,nowrap,noinfo,~2,<65(down,40%,border-top)' "$TEST_FZF_ARGS"
 grep -Fq -- '--bind=p:transform:' "$TEST_FZF_ARGS"
 grep -Fq '__preview-toggle' "$TEST_FZF_ARGS"
 grep -Fq '__preview-restore' "$TEST_FZF_ARGS"
@@ -601,8 +635,9 @@ grep -Fq '(detached HEAD)' "$layer_snapshot" # Git skeleton precedes enrichment
 for _ in {1..500}; do [[ -e $layer_state/completed.$layer_generation ]] && break; sleep 0.02; done
 [[ -e $layer_state/completed.$layer_generation ]]
 unset TEST_GIT_LIST_DELAY TEST_WT_LIST_DELAY
-grep -Fq '!↑' "$layer_snapshot"              # advisory Worktrunk symbols
-grep -Fq 'locked' "$layer_snapshot"           # Git topology remains
+grep -Fq ' ! ⊞↑' "$layer_snapshot"            # aligned Worktrunk status positions
+grep -Fq '⊞' "$layer_snapshot"           # Git topology remains
+grep -Fq '👩🏽‍💻' "$layer_snapshot"             # grapheme marker remains intact
 [[ $(grep -Fc "$feature_a" "$layer_snapshot") -eq 1 ]] # update, never duplicate
 grep -Fq 'wt <-C>' "$TEST_CAPTURE"
 grep -Fq '<--config-set> <list.json-schema=2>' "$TEST_CAPTURE"

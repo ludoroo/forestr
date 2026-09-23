@@ -64,7 +64,50 @@ backend_adapter_dispatch() {
             fi
             "$JQ_BIN" -c '{version:1,operation:"enrich",ok:true,items:[.items[]?
               | select(.worktree.path != null)
-              | {path:.worktree.path,branch:(.branch // ""),head:(.head.short_sha // ""),symbols:(.display.symbols // "")} ]}' <<<"$raw"
+              | {
+                  path:.worktree.path,
+                  branch:(.branch // ""),
+                  head:(.head.short_sha // ""),
+                  symbols:(.display.symbols // ""),
+                  status:{
+                    staged:(if .worktree.prunable != null then false
+                            elif .worktree.changes == null then null else (.worktree.changes.staged // false) end),
+                    modified:(if .worktree.prunable != null then false
+                              elif .worktree.changes == null then null else (.worktree.changes.modified // false) end),
+                    untracked:(if .worktree.prunable != null then false
+                               elif .worktree.changes == null then null else (.worktree.changes.untracked // false) end),
+                    worktree_state:(
+                      if .worktree.prunable != null then "prunable"
+                      elif (.worktree.changes == null or .worktree.changes.conflicted == null) then "unresolved"
+                      elif .worktree.changes.conflicted then "conflicted"
+                      elif ((.worktree | has("operation")) and .worktree.operation == null) then "unresolved"
+                      elif ((.worktree.operation // "") != "") then "operation"
+                      elif (.worktree.locked // false) then "locked"
+                      elif (.worktree.detached // false) then "detached"
+                      elif ((.worktree.duplicate_branch // false) or (.worktree.branch_mismatch // false)) then "warning"
+                      else "" end),
+                    branch_state:(
+                      if .worktree.prunable != null then ""
+                      elif .display.state != null then .display.state
+                      elif (.worktree.main // false) then "is_main"
+                      elif .default_branch == null then "unresolved"
+                      elif (.default_branch.ahead == null or .default_branch.behind == null
+                            or .default_branch.orphan == null or .default_branch.merge_conflicts == null
+                            or ((.default_branch | has("integration")) and .default_branch.integration == null))
+                        then "unresolved"
+                      else "" end),
+                    remote_state:(
+                      if .worktree.prunable != null then ""
+                      elif ((has("upstream")) and .upstream == null) then "unresolved"
+                      elif ((.upstream.ahead // 0) > 0 and (.upstream.behind // 0) > 0) then "diverged"
+                      elif ((.upstream.ahead // 0) > 0) then "ahead"
+                      elif ((.upstream.behind // 0) > 0) then "behind"
+                      elif .upstream != null then "synced"
+                      else "" end),
+                    marker:(if .worktree.prunable != null then ""
+                            elif has("marker") then .marker else "" end)
+                  }
+                } ]}' <<<"$raw"
             ;;
     esac
 }

@@ -17,7 +17,21 @@ cat >"$tmp/wt" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\0' "$@" >"$TEST_ARGS"
 case " $* " in
-  *" list "*) printf '{"schema":2,"items":[{"branch":"topic","worktree":{"path":"/repo/.topic"},"head":{"short_sha":"abc123"},"display":{"symbols":"!↑"}}]}\n' ;;
+  *" list "*)
+    if [[ ${TEST_UNRESOLVED:-} == true ]]; then
+      printf '{"schema":2,"items":[{"branch":"topic","worktree":{"path":"/repo/.topic","operation":null,"changes":null},"head":{"short_sha":"abc123"},"default_branch":{"ahead":null,"behind":null,"orphan":null,"integration":null,"merge_conflicts":null},"upstream":null,"marker":null,"display":{}}]}\n'
+    elif [[ ${TEST_PRIORITY:-} == true ]]; then
+      printf '{"schema":2,"items":[
+        {"branch":"conflict","worktree":{"path":"/repo/.conflict","locked":{},"operation":"rebase","changes":{"conflicted":true}},"head":{},"display":{"state":"ahead"}},
+        {"branch":"pending","worktree":{"path":"/repo/.pending","locked":{},"operation":null,"changes":{"conflicted":false}},"head":{},"display":{"state":"ahead"}},
+        {"branch":"operation","worktree":{"path":"/repo/.operation","locked":{},"operation":"rebase","changes":{"conflicted":false}},"head":{},"display":{"state":"ahead"}},
+        {"branch":"quiet","worktree":{"path":"/repo/.quiet","changes":{"conflicted":false}},"head":{},"default_branch":{"ahead":0,"behind":0,"orphan":false,"merge_conflicts":false},"display":{}},
+        {"branch":"prunable","worktree":{"path":"/repo/.prunable","prunable":{"reason":"missing"},"operation":null,"changes":null},"head":{},"default_branch":{"ahead":null,"behind":null,"orphan":null,"integration":null,"merge_conflicts":null},"upstream":null,"marker":null,"display":{}}
+      ]}\n'
+    else
+      printf '{"schema":2,"items":[{"branch":"topic","worktree":{"path":"/repo/.topic","branch_mismatch":true,"changes":{"staged":false,"modified":true,"untracked":true,"conflicted":false}},"head":{"short_sha":"abc123"},"display":{"state":"ahead","symbols":"!?⚑↑💬"},"upstream":{"ahead":2,"behind":0},"marker":"💬"}]}\n'
+    fi
+    ;;
   *" remove "*) printf '{}\n' ;;
   *) printf '{"path":"/repo/.topic","branch":"topic"}\n' ;;
 esac
@@ -46,8 +60,29 @@ backend_dispatch "$(request remove open true)" >/dev/null
 
 result=$(backend_dispatch "$($JQ_BIN -cn \
   '{version:1,operation:"enrich",repo_root:"/repo",collection_timeout_ms:5000}')")
-"$JQ_BIN" -e '.ok and .items == [{path:"/repo/.topic",branch:"topic",head:"abc123",symbols:"!↑"}]' <<<"$result" >/dev/null
+"$JQ_BIN" -e '.ok and .items == [{path:"/repo/.topic",branch:"topic",head:"abc123",symbols:"!?⚑↑💬",
+  status:{staged:false,modified:true,untracked:true,worktree_state:"warning",branch_state:"ahead",
+          remote_state:"ahead",marker:"💬"}}]' <<<"$result" >/dev/null
 actual=$(args "$tmp/args" | paste -s -d ' ' -)
 [[ $actual == '-C /repo list --format=json --config-set list.json-schema=2 --config-set list.full=false --config-set list.timeout-ms=5000' ]]
+
+export TEST_UNRESOLVED=true
+result=$(backend_dispatch "$($JQ_BIN -cn \
+  '{version:1,operation:"enrich",repo_root:"/repo",collection_timeout_ms:5000}')")
+unset TEST_UNRESOLVED
+"$JQ_BIN" -e '.ok and .items[0].status == {
+  staged:null,modified:null,untracked:null,worktree_state:"unresolved",branch_state:"unresolved",
+  remote_state:"unresolved",marker:null}' <<<"$result" >/dev/null
+
+export TEST_PRIORITY=true
+result=$(backend_dispatch "$($JQ_BIN -cn \
+  '{version:1,operation:"enrich",repo_root:"/repo",collection_timeout_ms:5000}')")
+unset TEST_PRIORITY
+"$JQ_BIN" -e '([.items[].status.worktree_state] == ["conflicted","unresolved","operation","","prunable"])
+  and (.items[-2].status.branch_state == "")
+  and (.items[-1].status == {staged:false,modified:false,untracked:false,worktree_state:"prunable",
+      branch_state:"",remote_state:"",marker:""})
+  and (all(.items[]; .status.remote_state == "" and .status.marker == ""))' \
+  <<<"$result" >/dev/null
 
 printf 'Worktrunk adapter tests passed\n'
