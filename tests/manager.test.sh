@@ -55,6 +55,8 @@ for i in {1..27}; do
         commit -q --allow-empty -m "feature preview $i"
 done
 "$git_bin" -C "$feature_a" -c user.name=Test -c user.email=test@example.com \
+    commit -q --allow-empty -m 'unicode 日本 preview'
+"$git_bin" -C "$feature_a" -c user.name=Test -c user.email=test@example.com \
     commit -q --allow-empty -m $'unsafe \033]8;;https://example.invalid\a subject'
 "$git_bin" -C "$repo_a" config log.showSignature true
 head_a=$("$git_bin" -C "$repo_a" rev-parse HEAD)
@@ -467,25 +469,40 @@ feature_payload=$(payload_for ' feature-a ' "$TEST_CANDIDATES")
 FORESTR_GIT_BIN="$git_bin" JQ_BIN="$jq_bin" HERDR_BIN="$tmp/missing-herdr" \
     FZF_BIN="$tmp/missing-fzf" CURL_BIN="$tmp/missing-curl" WORKTRUNK_BIN="$tmp/missing-wt" \
     bash "$plugin_root/preview.sh" "$feature_payload" >"$tmp/preview"
-grep -Fq 'repo a  feature-a' "$tmp/preview"
+grep -Fq 'repo a / feature-a' "$tmp/preview"
 grep -Fq "$feature_a" "$tmp/preview"
 grep -Fq 'unsafe' "$tmp/preview"
 grep -Fq 'feature preview 27' "$tmp/preview"
+grep -Fq 'unicode 日本 preview' "$tmp/preview"
 ! grep -Fq 'main-only preview exclusion' "$tmp/preview"
 [[ $(tail -n +4 "$tmp/preview" | wc -l | tr -d ' ') -eq 25 ]]
 python3 - "$tmp/preview" <<'PY'
+import re
 import sys
+import unicodedata
 
-data = open(sys.argv[1], "rb").read().split(b"\n")[3:]
-controls = [byte for byte in b"\n".join(data) if byte < 32 and byte != 10]
+raw = open(sys.argv[1], "rb").read()
+assert b"\x1b[1;35mCOMMITS" in raw
+assert b"\x1b[36m" in raw
+ansi = re.compile(rb"\x1b\[[0-9;]*m")
+log_lines = raw.split(b"\n")[3:]
+plain = [ansi.sub(b"", line).decode("utf-8") for line in log_lines if line]
+assert len(plain) == 25, len(plain)
+
+def display_width(text):
+    return sum(0 if unicodedata.combining(char) else 2 if unicodedata.east_asian_width(char) in "WF" else 1 for char in text)
+
+assert all(display_width(line) == 80 for line in plain), {display_width(line) for line in plain}
+controls = [byte for byte in ansi.sub(b"", b"\n".join(log_lines)) if byte < 32 and byte != 10]
 assert not controls, controls
 PY
 header_payload=$("$jq_bin" -Rnr --arg p "$feature_payload" \
     '$p|@base64d|fromjson|.repo_name="repo\nspoof"|.label="branch\u061c\nspoof"|tojson|@base64')
 FORESTR_GIT_BIN="$git_bin" JQ_BIN="$jq_bin" bash "$plugin_root/preview.sh" \
     "$header_payload" >"$tmp/header-preview"
-[[ $(sed -n '1p' "$tmp/header-preview") == *'repo spoof  branch  spoof'* ]]
-[[ $(sed -n '3p' "$tmp/header-preview") == '' ]]
+[[ $(sed -n '1p' "$tmp/header-preview") == *'repo spoof / branch  spoof'* ]]
+grep -Fq 'COMMIT' < <(sed -n '3p' "$tmp/header-preview")
+grep -Fq 'SUBJECT' < <(sed -n '3p' "$tmp/header-preview")
 missing_preview_payload=$("$jq_bin" -Rnr --arg p "$feature_payload" --arg path "$tmp/missing-preview" \
     '$p|@base64d|fromjson|.path=$path|.canonical_path=$path|tojson|@base64')
 FORESTR_GIT_BIN="$git_bin" JQ_BIN="$jq_bin" bash "$plugin_root/preview.sh" \
@@ -511,7 +528,7 @@ feature_b_payload=$(payload_for ' feature-b ' "$TEST_CANDIDATES")
 [[ $("$jq_bin" -Rnr --arg p "$feature_b_payload" '$p|@base64d|fromjson|.repo_key') == "$repo_b" ]]
 FORESTR_GIT_BIN="$git_bin" JQ_BIN="$jq_bin" bash "$plugin_root/preview.sh" \
     "$feature_b_payload" >"$tmp/fallback-key-preview"
-grep -Fq 'repo-b  feature-b' "$tmp/fallback-key-preview"
+grep -Fq 'repo-b / feature-b' "$tmp/fallback-key-preview"
 grep -Fq 'initial' "$tmp/fallback-key-preview"
 # Terminal-inherited styling and display-width table behavior remain configured.
 grep -Fq -- '--color=16,fg:-1,bg:-1,gutter:-1' "$TEST_FZF_ARGS"
