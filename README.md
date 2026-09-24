@@ -1,38 +1,54 @@
-# Forestr
+![Forestr — every worktree, one place](media/banner.png)
 
-Forestr is a Linux and macOS plugin for [Herdr](https://herdr.dev/) that manages Git branch worktrees in one fast, modal `fzf` popup. It discovers repositories represented by Herdr workspaces, lists existing worktrees and available branches, opens or creates a checkout, focuses the matching workspace, and safely removes selected worktrees.
+A [Herdr](https://herdr.dev/) plugin that manages Git branch worktrees from one fast, modal `fzf` popup — list, open, create, and safely remove worktrees across every repository Herdr knows about, **without leaving your keyboard**.
 
 - Plugin ID: `ludoroo.forestr`
 - Action: `ludoroo.forestr.open`
 - Version: `0.1.1`
+- Platforms: Linux, macOS
 
-## Screenshot
+![Forestr modal listing worktrees across repositories with a commit-log preview](media/modal.png)
 
-> **Screenshot placeholder:** add a capture of the Forestr manager popup here.
+## Key Design Principle
 
-## Requirements
+**Every worktree, one place — regardless of repository size.** Forestr gives you one consistent interface for the worktrees behind all of your Herdr workspaces, from small repositories to large monorepos. Fast operations stay immediate, while potentially expensive enrichment and approved removals run asynchronously so large repositories do not make the interface feel stuck. Forestr drives your backend of choice — native Git or [Worktrunk](https://worktrunk.dev/) — without hiding or bypassing its checks and hooks.
 
-Forestr supports **Linux and macOS** and requires:
+## Features
 
-- Bash 4 or newer (associative arrays). macOS's system Bash is too old; install a current Bash with `brew install bash`.
-- Herdr 0.9 or newer
-- Git
-- `jq`
-- `fzf` 0.74 or newer, including `--track`, `--id-nth`, `--listen-unsafe`, transform actions, input/footer borders, and component color options
-- `curl` built with Unix-socket support (`--unix-socket`)
-- A session-detach launcher for removal workers: `setsid` on Linux, or Perl with `POSIX::setsid` (provided by macOS's system Perl)
+### One popup, every repository
 
-Optional backend tooling:
+Forestr discovers repositories through Herdr workspace metadata, the pane working directory of plain workspaces, and the repository you launched it from, then lists their worktrees in a single table: repository, branch, state, `HEAD`, and path. The row for your current checkout renders instantly; the rest stream in without blocking.
 
-- [Worktrunk](https://worktrunk.dev/) (`wt`) enables the Worktrunk backend, including clobber-create, relocation-aware operations, and richer status symbols.
+### Open or create in one keystroke
 
-Forestr searches common executable locations, including Apple Silicon and Intel Homebrew prefixes. Explicit `BASH_BIN`, `HERDR_BIN`, `FZF_BIN`, `GIT_BIN`, `JQ_BIN`, `CURL_BIN`, and `WORKTRUNK_BIN` overrides are also supported. Because fzf accepts its shell as a whitespace-split command, the Bash executable path must not contain whitespace or shell metacharacters.
+`Enter` opens the selected worktree and focuses (or creates) its Herdr workspace. `c` starts a repository-first create wizard: pick a repository, pick a local or remote branch — or type a new one — and Forestr materialises the checkout and jumps to it.
 
-On macOS, install the non-system runtime dependencies with:
+### Durable, interruption-safe removal
 
-```bash
-brew install bash jq fzf
-```
+`d` / `D` **approve** a removal and hand it to a detached worker that survives closing the popup, pressing `q`/`Esc`, Ctrl+C, and workspace switches. Progress shows in the footer while it runs. The result lands in the footer if the popup is still open, or arrives as a Herdr notification if it isn't.
+
+If a removal is interrupted after Git has already mutated (for example a large deletion killed mid-way), the next launch reconciles it against `git worktree list` and closes only the exactly matching stale workspace — never a worktree that is still registered, still on disk, or unverifiable.
+
+### Source-aware workspace handling
+
+Removing the worktree you launched Forestr from focuses its parent workspace **before** any mutation starts, so you are never left inside a checkout that is being deleted.
+
+### Commit-log preview
+
+`p` toggles a bounded, fixed-width commit history for the selected worktree (its own `HEAD` ancestry only, capped at 25 commits) with compacted change statistics. It moves below the list when the side panel is too narrow.
+
+### Follows your Herdr theme
+
+The popup draws with your terminal's default colours and ANSI palette, so it matches whatever Herdr theme you run — no colour configuration needed.
+
+### Pluggable backends
+
+`backend = "auto"` uses [Worktrunk](https://worktrunk.dev/) (`wt`) when available and native Git otherwise.
+
+| Backend | Highlights |
+| --- | --- |
+| **Git** | Pure porcelain. Exact local/remote branch materialisation, sibling checkout paths (`.<repository>-<branch>`), conservative deletion with unmerged-branch retention. |
+| **Worktrunk** | Delegates switch/create/remove to `wt`, including clobber-create and relocation-aware operations. Background enrichment adds Worktrunk's seven-slot status symbols; each icon is overridable via `status_icon_*`. Hooks stay enabled. |
 
 ## Install
 
@@ -40,80 +56,105 @@ brew install bash jq fzf
 herdr plugin install ludoroo/forestr
 ```
 
-To develop from a local clone, run this from the repository root:
+Then open Forestr from Herdr's action picker with `ludoroo.forestr.open`.
+
+### Requirements
+
+Herdr does not install plugin dependencies; make sure these are on your `PATH` (Linux or macOS):
+
+| Dependency | Notes |
+| --- | --- |
+| Herdr `>= 0.9.0` | |
+| Bash `>= 4` | |
+| Git, `jq`, `curl` | |
+| `fzf` `>= 0.74` | |
+| Worktrunk (`wt`) | *optional* — enables the Worktrunk backend |
+
+Removal workers are detached with `setsid` (part of util-linux on Linux) or the system Perl on macOS; both are present by default.
+
+On macOS:
 
 ```bash
-herdr plugin link "$(pwd)" --enabled
+brew install bash jq fzf
 ```
 
-Open Forestr from Herdr's action picker with `ludoroo.forestr.open`.
+Forestr searches `PATH` plus common Homebrew prefixes. Explicit `BASH_BIN`, `HERDR_BIN`, `FZF_BIN`, `GIT_BIN`, `JQ_BIN`, `CURL_BIN`, and `WORKTRUNK_BIN` overrides are honoured.
 
-## Controls and create wizard
+## Remove
 
-The popup begins in the worktree manager. Default keys are:
+```bash
+herdr plugin uninstall ludoroo.forestr
+```
+
+Removal records under `${XDG_STATE_HOME:-$HOME/.local/state}/forestr/` are left in place as an audit trail; delete them manually if you no longer want them.
+
+## Keys
 
 | Key | Action |
 | --- | --- |
 | `j` / `k`, `g` / `G` | Move down/up, first/last |
 | `Enter` | Open or choose the selected item |
 | `c` | Start the create wizard |
-| `d` / `D` | Remove / force-remove the selected worktree |
-| `p` | Toggle the selected worktree's commit log preview |
-| `/`, `Ctrl-R`, `q` | Search, refresh, quit |
-| `h` / `Esc` | Go back or close |
+| `d` / `D` | Remove / force-remove the selected worktree (approval is final) |
+| `p` | Toggle the commit-log preview |
+| `/` | Search |
+| `Ctrl-R` | Refresh |
+| `h` / `Esc` | Back / close |
+| `q` | Quit |
 
-The create wizard is repository-first: choose a repository, then choose an existing source or type a new branch. On the source screen, `l`, `r`, and `b` show local, remote, or both branch scopes; `n` starts exact branch-name input. `C` requests clobber-create when the selected backend supports it. The default source scope is local. All keys and the default scope can be changed in `config.toml`; the complete defaults are in [`config.example.toml`](config.example.toml).
+Create wizard, source screen: `l` / `r` / `b` switch between local, remote, and both branch scopes; `n` types an exact new branch name; `C` requests clobber-create (Worktrunk only).
 
-## Backend behavior
-
-`backend = "auto"` is the default. It selects Worktrunk when an executable `wt` is available and otherwise uses native Git. Set `backend = "git"` or `backend = "worktrunk"` to make selection explicit.
-
-- **Git:** uses Git porcelain directly. It opens existing worktrees, materializes exact local or remote branches, creates new branches, and removes selected secondary worktrees. New checkout paths are siblings of the primary checkout, named `.<repository>-<sanitized-branch>`.
-- **Worktrunk:** delegates switch/create/remove semantics to `wt`. Enrichment adds Worktrunk head and status data in the background and passes its collection budget to Worktrunk's built-in `list.timeout-ms` setting. Status symbols retain Worktrunk's seven aligned positions—three working-tree flags, worktree condition, default branch, remote, and marker—and each semantic icon can be overridden with the `status_icon_*` settings in [`config.example.toml`](config.example.toml). The final marker remains branch data managed by `wt config state marker`. Enrichment can be disabled with `enrich_backend = false`.
-
-The budget covers Worktrunk's collection phase. If broader `wt list` setup stalls, the existing Git rows remain usable; refreshing or closing the popup terminates the background producer.
-
-The initial active-repository row is rendered before global Herdr discovery finishes. Refresh work is generation-scoped, and stale background output cannot replace a newer snapshot. Operation results use a fixed two-row footer status area, so their fzf transforms do not synchronously rebuild the candidate list.
-
-Removals are durable asynchronous jobs. Pressing `d` or `D` approves and queues the operation, immediately reports that safety checks, hooks, and file deletion are running, and leaves the row visible until an authoritative refresh. Closing the popup, pressing `q`/`Esc`, or closing the source workspace does **not** cancel an approved removal. There is deliberately no post-approval cancel key because neither backend exposes a reliable irreversible boundary. Final results are sent as Herdr notifications and shown when Forestr is next opened.
-
-Removal records and logs are retained under `${XDG_STATE_HOME:-$HOME/.local/state}/forestr/removals`. Set `FORESTR_REMOVAL_STATE_DIR` to override this location (especially in tests). On startup, Forestr reconciles interrupted queued/running jobs against `git worktree list`: registered worktrees, surviving checkout paths, and unknown topology are retained. Only a missing registration plus a missing original path can close an exactly revalidated stale Herdr workspace.
-
-The manager shows a bounded commit-log preview for the selected worktree. It follows only that worktree's `HEAD` ancestry—never `--all`—uses one fixed-width line per commit, and is capped at 25 commits to remain readable in busy repositories. Change statistics are compacted (for example, `4k`) and the author column is omitted when space is tight. Press `p` to toggle the preview. It moves below the list when the side panel would be too narrow and stays hidden in the create wizard.
-
-## Git safety
-
-Forestr intentionally validates selected repositories, refs, and canonical checkout paths again immediately before mutation. The native Git backend:
-
-- never removes the primary worktree, runs `git worktree prune`, deletes arbitrary directories, or rewrites unrelated refs;
-- refuses path collisions, ambiguous/missing refs, cross-repository paths, and changed selections;
-- does not infer tracking for newly typed branches; remote selections create an exact tracking branch;
-- uses normal deletion for `d`, retaining unmerged or newly checked-out branches with a warning;
-- uses force worktree/branch deletion only for explicit `D`;
-- does not support branch clobber in Git mode and leaves a newly created checkout in place if post-create verification fails, so it can be inspected rather than destructively rolled back.
-
-Worktrunk operations preserve Worktrunk's own hooks and safety checks; Forestr does not pass hook-disabling flags. Removal workers run in a separate OS session with redirected standard streams, so Herdr can shut down the popup terminal runtime without terminating an approved job. Workers use the stable primary checkout as their working directory, never the linked checkout being removed.
+Every key is remappable in `config.toml`; defaults are in [`config.example.toml`](config.example.toml).
 
 ## Configuration
-
-Find the plugin configuration directory with:
 
 ```bash
 herdr plugin config-dir ludoroo.forestr
 ```
 
-Copy [`config.example.toml`](config.example.toml) to `config.toml` in that directory and edit only the values you want to change. Forestr parses configuration as data and never sources or evaluates it as shell code.
+Copy [`config.example.toml`](config.example.toml) to `config.toml` in that directory and change only what you need. Configuration is parsed as data — never sourced as shell.
 
-## Development
+| Setting | Default | Purpose |
+| --- | --- | --- |
+| `popup_width` / `popup_height` | `90%` / `85%` | Popup size in cells or percent |
+| `backend` | `auto` | `auto`, `git`, or `worktrunk` |
+| `create_scope` | `local` | Branch scope offered first in the wizard |
+| `create_base` | `""` | Base ref for new branches (Git backend) |
+| `enrich_backend` | `true` | Worktrunk status enrichment |
+| `worktrunk_enrichment_collection_timeout_ms` | `5000` | Passed to Worktrunk's `list.timeout-ms` |
+| `worktrunk_enrichment_concurrency` | `2` | `1` or `2` parallel enrichment jobs |
+| `status_icon_*` | see example | Per-slot Worktrunk status glyph overrides |
+| `key_*` | see example | Key bindings |
 
-Runtime plugin code lives in [`src/`](src/), while behavior tests live in [`tests/`](tests/). The Herdr manifest and user-facing example configuration remain at the repository root.
+## How Removal Works
 
-On Linux or macOS, run all behavior tests, Bash syntax checks, TOML parsing, stale-name checks, and Git whitespace checks with:
+1. **Approve** — `d`/`D` verifies the row is a registered worktree, snapshots the matching Herdr workspace, and takes an atomic per-worktree lock so the same checkout cannot be queued twice.
+2. **Detach** — A worker starts in its own OS session from the repository's primary checkout. Herdr shutting down the popup terminal cannot reach it.
+3. **Mutate** — The backend runs with hooks and safety checks intact (`wt remove --foreground --format=json` or native Git). Its JSON result, including branch outcomes such as `retained_unmerged`, is parsed rather than inferred from the exit status.
+4. **Prove** — Regardless of what the backend reported, Forestr probes Git from the primary checkout. Only *unregistered + path gone* counts as removed; *registered*, *present*, or *unknown* retains the worktree.
+5. **Reconcile** — The Herdr workspace is closed only if its ID and checkout path still match the snapshot, after a second probe. Results are persisted and notified.
+6. **Recover** — On every launch, queued/running records whose exact worker (PID, start time, and argv) is gone are reconciled with the same rules. Recovery only observes; it never re-runs a destructive command.
 
-```bash
-./test.sh
-```
+There is intentionally **no post-approval cancel key**: neither backend exposes a reliable boundary between "safe to abort" and "already irreversible".
+
+## Git Safety
+
+The native Git backend:
+
+- never removes the primary worktree, runs `git worktree prune`, deletes arbitrary directories, or rewrites unrelated refs;
+- refuses path collisions, ambiguous or missing refs, cross-repository paths, and selections that changed since the list was rendered;
+- creates exact tracking branches for remote selections and does not infer tracking for typed names;
+- uses normal deletion for `d` (retaining unmerged or checked-out branches with a warning) and force deletion only for explicit `D`;
+- leaves a freshly created checkout in place if post-create verification fails, so it can be inspected rather than destructively rolled back.
+
+Worktrunk operations keep Worktrunk's own hooks and checks; Forestr never passes `--no-hooks` or `--yes`.
+
+## Known Limitations
+
+- **Removal cannot be cancelled once approved.** Close the popup freely; the job still completes and reports. This is a deliberate safety trade-off (see above).
+- **Closing an active workspace defers to Herdr.** If you navigate back into a worktree that is being removed, Herdr — not Forestr — chooses the next focused workspace when it closes.
+- **Removal records are not pruned automatically.** They are small JSON/log files kept as an audit trail under `~/.local/state/forestr/removals`.
 
 ## License
 
-Forestr is available under the [MIT License](LICENSE).
+[MIT](LICENSE)

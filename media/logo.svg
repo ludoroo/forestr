@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+<title id="title">Forestr logo</title><desc id="desc">Three luminous branch paths grow from a single stem into a geometric forest canopy.</desc>
+<defs><linearGradient id="g" x1="0" y1="1" x2="1" y2="0"><stop stop-color="#70D6A7"/><stop offset="1" stop-color="#D3F4A2"/></linearGradient></defs>
+<rect x="16" y="16" width="480" height="480" rx="116" fill="#102720"/>
+<path d="M256 395V297 M256 325L160 241V172 M256 325L352 241V172 M256 297V146" stroke="url(#g)" stroke-width="27" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+<path d="M160 172V125 M352 172V125 M256 146V107" stroke="url(#g)" stroke-width="27" stroke-linecap="round"/>
+<path d="M98 174L160 100L222 174ZM194 122L256 48L318 122ZM290 174L352 100L414 174Z" fill="url(#g)"/>
+<path d="M172 422H340" stroke="#4C8068" stroke-width="14" stroke-linecap="round"/>
+<circle cx="256" cy="325" r="12" fill="#F4B86E"/>
+</svg>
