@@ -153,6 +153,22 @@ active_repository_record() {
 # One encoded JSON record per repository. The active repository is first, then
 # repositories recovered from Herdr workspace metadata. Canonical roots/common
 # directories prevent a linked checkout from being discovered twice.
+plain_workspace_records() {
+    local workspace_json=$1 workspace_id panes cwd root key name
+    while IFS= read -r workspace_id; do
+        [[ -n $workspace_id ]] || continue
+        panes=$("$herdr" pane list --workspace "$workspace_id" 2>/dev/null) || continue
+        cwd=$("$jq_bin" -r '[.result.panes[]? | (.foreground_cwd // .cwd // empty)] | first // empty' <<<"$panes")
+        [[ -n $cwd && -d $cwd ]] || continue
+        root=$("$git_bin" -C "$cwd" rev-parse --show-toplevel 2>/dev/null) || continue
+        key=$("$git_bin" -C "$root" rev-parse --git-common-dir 2>/dev/null) || continue
+        case $key in /*) ;; *) key=$root/$key ;; esac
+        name=${root##*/}
+        "$jq_bin" -Rnr --arg root "$root" --arg key "$key" --arg name "$name" \
+            '{repo_root:$root,repo_key:$key,repo_name:$name} | tojson | @base64'
+    done < <("$jq_bin" -r '.result.workspaces[]? | select((.worktree.repo_root // "") == "") | .workspace_id // empty' <<<"$workspace_json")
+}
+
 repository_records() {
     local warnings_file=${1:-/dev/null} workspace_file=${2:-}
     local workspace_json records record repo_root repo_key canonical_root canonical_key active_canonical
@@ -173,6 +189,11 @@ repository_records() {
            repo_name: (.repo_name // (.repo_root | split("/") | last))}
         | tojson | @base64
     ' <<<"$workspace_json")
+    # Workspaces created without worktree provenance (plain `workspace create`)
+    # still usually sit inside a repository. Resolve them from their pane cwd so
+    # every repository the user works in is manageable, not only Herdr-opened
+    # worktrees.
+    records+=$'\n'$(plain_workspace_records "$workspace_json")
 
     while IFS= read -r record; do
         [[ -n $record ]] || continue

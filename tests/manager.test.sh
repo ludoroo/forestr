@@ -130,6 +130,8 @@ if [[ ${1:-} == workspace && ${2:-} == list ]]; then
     if [[ -n ${TEST_EXTRA_WORKSPACE_PATH:-} ]]; then
         extra_workspace=",{\"workspace_id\":\"${TEST_EXTRA_WORKSPACE_ID:-w-extra}\",\"worktree\":{\"checkout_path\":\"$TEST_EXTRA_WORKSPACE_PATH\",\"repo_key\":\"$TEST_REPO_B/.git\",\"repo_name\":\"repo-b\",\"repo_root\":\"$TEST_REPO_B\"}}"
     fi
+    # A workspace created without worktree provenance exposes only its label.
+    [[ -z ${TEST_PLAIN_WORKSPACE_CWD:-} ]] || extra_workspace+=',{"workspace_id":"wP","label":"plain"}'
     cat <<JSON
 {"result":{"workspaces":[
  {"workspace_id":"w1","worktree":{"checkout_path":"$TEST_REPO_A","repo_key":"$TEST_REPO_A/.git","repo_name":"repo a","repo_root":"$TEST_REPO_A"}},
@@ -138,6 +140,12 @@ if [[ ${1:-} == workspace && ${2:-} == list ]]; then
  {"workspace_id":"w4","worktree":{"checkout_path":"$TEST_FEATURE_B","repo_key":"$TEST_REPO_B/.git","repo_name":"repo-b","repo_root":"$TEST_REPO_B"}}$extra_workspace
 ]}}
 JSON
+elif [[ ${1:-} == pane && ${2:-} == list ]]; then
+    if [[ ${4:-} == wP && -n ${TEST_PLAIN_WORKSPACE_CWD:-} ]]; then
+        printf '{"result":{"panes":[{"pane_id":"wP:p1","cwd":"%s","foreground_cwd":"%s"}]}}\n' "$TEST_PLAIN_WORKSPACE_CWD" "$TEST_PLAIN_WORKSPACE_CWD"
+    else
+        printf '{"result":{"panes":[]}}\n'
+    fi
 elif [[ ${1:-} == worktree && ${2:-} == list ]]; then
     repo=
     for ((i=1; i<=$#; i++)); do
@@ -1323,16 +1331,24 @@ grep -Fq '…' <(sed -n '2p' "$tmp/action-warning-footer.plain")
 [[ $(sed -n '3p' "$tmp/action-warning-footer.plain") == 'manage footer' ]]
 ! grep -Fq 'herdr <workspace> <close>' "$TEST_CAPTURE"
 
-# Non-Git invocation still discovers repositories globally through Herdr.
-export ACTIVE_REPO_ROOT="" MANAGER_SOURCE_CHECKOUT_PATH=""
+# Non-Git invocation still discovers repositories globally through Herdr,
+# including workspaces that lack worktree provenance but whose pane cwd is
+# inside a repository.
+repo_c="$tmp/repo-c"; mkdir -p "$repo_c/nested"
+"$git_bin" -C "$repo_c" init -q -b main
+"$git_bin" -C "$repo_c" -c user.name=Test -c user.email=test@example.com commit -q --allow-empty -m initial
+export ACTIVE_REPO_ROOT="" MANAGER_SOURCE_CHECKOUT_PATH="" TEST_PLAIN_WORKSPACE_CWD="$repo_c/nested"
 non_git_state="$tmp/non-git-state"; new_state "$non_git_state"
 bash "$plugin_root/manager.sh" __rows "$non_git_state" >"$TEST_CANDIDATES"
 grep -Fq 'refreshed' "$TEST_CANDIDATES"
 grep -Fq 'feature-b' "$TEST_CANDIDATES"
+grep -Fq "$repo_c" "$TEST_CANDIDATES"
 bash "$plugin_root/manager.sh" __enter-repository "$non_git_state" ''
 bash "$plugin_root/manager.sh" __rows "$non_git_state" >"$tmp/non-git-repositories"
 grep -Fq "$repo_a" "$tmp/non-git-repositories"
 grep -Fq "$repo_b" "$tmp/non-git-repositories"
+grep -Fq "$repo_c" "$tmp/non-git-repositories"
+unset TEST_PLAIN_WORKSPACE_CWD
 export ACTIVE_REPO_ROOT="$repo_a" MANAGER_SOURCE_CHECKOUT_PATH="$feature_a"
 
 # Standalone worker-seam assertions above intentionally launch refreshes without
