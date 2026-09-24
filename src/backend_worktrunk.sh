@@ -7,7 +7,7 @@ backend_worktrunk_failure() {
 }
 
 backend_adapter_dispatch() {
-    local request=$1 operation repo_root target mode force raw path branch
+    local request=$1 operation repo_root target mode force raw path branch removal_ref
     local collection_timeout_ms
     local -a args
     operation=$($JQ_BIN -r '.operation' <<<"$request")
@@ -41,14 +41,50 @@ backend_adapter_dispatch() {
         remove)
             target=$($JQ_BIN -r '.target' <<<"$request")
             force=$($JQ_BIN -r '.force' <<<"$request")
+            path=$($JQ_BIN -r '.path // empty' <<<"$request")
+            removal_ref=${path:-$target}
             args=(remove --foreground --format=json)
             [[ $force == true ]] && args+=(--force --force-delete)
-            args+=("$target")
-            if ! "$FORESTR_WORKTRUNK_BIN" -C "$repo_root" "${args[@]}" >/dev/null; then
+            args+=("$removal_ref")
+            if ! raw=$("$FORESTR_WORKTRUNK_BIN" -C "$repo_root" "${args[@]}"); then
                 backend_worktrunk_failure remove "Worktrunk did not remove $target."
                 return 0
             fi
-            printf '{"version":1,"operation":"remove","ok":true,"removed_worktree":true,"branch_outcome":"not_applicable","warning":""}\n'
+            # Worktrunk emits a JSON array even for one target. Foreground
+            # removal must return the final branch outcome; accepting a
+            # deferred/background result would make workspace reconciliation
+            # race an operation whose result is still unknown.
+            if ! "$JQ_BIN" -e '
+                type == "array" and length == 1
+                and .[0].kind == "worktree"
+                and (.[0].path | type == "string" and length > 0)
+                and (.[0].branch_outcome | IN("deleted","not_attempted","retained_unmerged",
+                    "retained_checked_out","retained_raced","retained_failed"))
+            ' >/dev/null 2>&1 <<<"$raw"; then
+                backend_worktrunk_failure remove "Worktrunk returned an incomplete removal result for $target."
+                return 0
+            fi
+            "$JQ_BIN" -c --arg target "$target" '
+                .[0].branch_outcome as $outcome
+                | {
+                    version: 1,
+                    operation: "remove",
+                    ok: true,
+                    removed_worktree: true,
+                    branch_outcome: (if $outcome == "not_attempted" then "not_applicable" else $outcome end),
+                    warning: (
+                        if $outcome == "retained_unmerged" then
+                            "Worktree removed, but unmerged branch " + $target + " was retained."
+                        elif $outcome == "retained_checked_out" then
+                            "Worktree removed, but branch " + $target + " is checked out elsewhere and was retained."
+                        elif $outcome == "retained_raced" then
+                            "Worktree removed, but branch " + $target + " changed during removal and was retained."
+                        elif $outcome == "retained_failed" then
+                            "Worktree removed, but Worktrunk could not delete branch " + $target + "."
+                        else "" end
+                    )
+                }
+            ' <<<"$raw"
             ;;
         enrich)
             collection_timeout_ms=$($JQ_BIN -r '.collection_timeout_ms' <<<"$request")

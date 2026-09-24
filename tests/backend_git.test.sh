@@ -5,7 +5,49 @@ repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 plugin_root="$repo_root/src"
 tmp=$(mktemp -d)
 tmp=$(cd "$tmp" && pwd -P)
-trap 'rm -rf "$tmp"' EXIT
+export FORESTR_REMOVAL_STATE_DIR="$tmp/removal-state"
+producer_pids_for_test() {
+    local pid state args
+    while read -r pid state args; do
+        [[ $state == *Z* ]] && continue
+        [[ $args == *'manager.sh __produce '*"$tmp"* ]] || continue
+        printf '%s\n' "$pid"
+    done < <(ps -ww -axo pid=,state=,command=)
+}
+signal_test_producer() {
+    local signal=$1 pid=$2 pgid
+    pgid=$(ps -o pgid= -p "$pid" 2>/dev/null || true)
+    pgid=${pgid//[[:space:]]/}
+    if [[ -n $pgid && $pgid == "$pid" ]]; then
+        kill "-$signal" -- "-$pid" 2>/dev/null || kill "-$signal" "$pid" 2>/dev/null || true
+    else
+        kill "-$signal" "$pid" 2>/dev/null || true
+    fi
+}
+cleanup_test() {
+    local pid found empty_samples=0
+    set +e
+    for _ in {1..100}; do
+        found=false
+        while IFS= read -r pid; do
+            [[ -n $pid ]] || continue
+            found=true
+            signal_test_producer TERM "$pid"
+        done < <(producer_pids_for_test)
+        if $found; then
+            empty_samples=0
+        else
+            empty_samples=$((empty_samples + 1))
+            (( empty_samples < 5 )) || break
+        fi
+        sleep 0.01
+    done
+    while IFS= read -r pid; do
+        [[ -z $pid ]] || signal_test_producer KILL "$pid"
+    done < <(producer_pids_for_test)
+    rm -rf "$tmp"
+}
+trap cleanup_test EXIT
 export JQ_BIN FORESTR_GIT_BIN=/usr/bin/git
 JQ_BIN=$(command -v jq)
 export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.fsmonitor GIT_CONFIG_VALUE_0=false
@@ -16,6 +58,17 @@ source "$plugin_root/backend_git.sh"
 backend_git_resolve
 
 fail() { printf 'backend_git.test.sh: %s\n' "$*" >&2; exit 1; }
+wait_for_manager_refresh() {
+    local state_dir=$1 generation
+    generation=$(cat "$state_dir/generation")
+    for _ in {1..500}; do
+        if [[ -e $state_dir/completed.$generation && ! -e $state_dir/producer.pid ]]; then
+            return 0
+        fi
+        sleep 0.02
+    done
+    fail "manager refresh generation $generation did not finish"
+}
 new_repo() {
     local repo=$1
     mkdir -p "$repo"
@@ -365,7 +418,7 @@ chmod +x "$manager_bin"/*
 # path. A backend that does not advertise precise stale removal fails clearly
 # without invoking its remove operation or pruning registration metadata.
 no_stale_plugin="$tmp/no-stale-plugin"; mkdir "$no_stale_plugin"
-cp "$plugin_root"/{manager.sh,lib.sh,backend.sh,backend_git.sh} "$no_stale_plugin/"
+cp "$plugin_root"/{manager.sh,removal_jobs.sh,lib.sh,backend.sh,backend_git.sh} "$no_stale_plugin/"
 sed 's/remove_stale:true/remove_stale:false/' "$no_stale_plugin/backend_git.sh" >"$no_stale_plugin/backend_git.sh.new"
 mv "$no_stale_plugin/backend_git.sh.new" "$no_stale_plugin/backend_git.sh"
 no_stale_path="$tmp/removals-no-stale-capability"
@@ -384,6 +437,7 @@ fi
 grep -Fq 'cannot safely remove a missing or prunable worktree path' "$no_stale_state/error"
 "$FORESTR_GIT_BIN" -C "$remove_repo" show-ref --verify --quiet refs/heads/no-stale-capability
 "$FORESTR_GIT_BIN" -C "$remove_repo" worktree list --porcelain | grep -Fq "$no_stale_path"
+wait_for_manager_refresh "$no_stale_state"
 
 HERDR_PLUGIN_ROOT="$repo_root" HERDR_PLUGIN_CONFIG_DIR="$manager_config" \
 HERDR_BIN_PATH="$manager_bin/herdr" FZF_BIN="$manager_bin/fzf" GIT_BIN="$FORESTR_GIT_BIN" JQ_BIN="$JQ_BIN" \
@@ -475,5 +529,6 @@ refreshed_generation=$(cat "$manager_state/generation")
 [[ $refreshed_generation -gt $removed_generation ]]
 ! grep -Fq "$warning_path" "$manager_state/snapshot.$refreshed_generation"
 grep -Fq 'no longer a registered worktree' "$manager_state/error"
+wait_for_manager_refresh "$manager_state"
 
 printf 'Git adapter tests passed\n'

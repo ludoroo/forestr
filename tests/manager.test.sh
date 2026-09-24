@@ -1,30 +1,61 @@
 #!/usr/bin/env bash
 
-set -euo pipefail
+set -Eeuo pipefail
 
 repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 plugin_root="$repo_root/src"
 tmp=$(mktemp -d)
 tmp=$(cd "$tmp" && pwd -P)
+export FORESTR_REMOVAL_STATE_DIR="$tmp/removal-state"
 producer_pids_for_test() {
-    local pid args
-    while read -r pid args; do
+    local pid state args
+    while read -r pid state args; do
+        [[ $state == *Z* ]] && continue
         [[ $args == *'manager.sh __produce '*"$tmp"* ]] || continue
         printf '%s\n' "$pid"
-    done < <(ps -ww -axo pid=,command=)
+    done < <(ps -ww -axo pid=,state=,command=)
 }
-cleanup_test() {
-    local pid
-    set +e
-    while IFS= read -r pid; do [[ -z $pid ]] || kill -TERM "$pid" 2>/dev/null; done < <(producer_pids_for_test)
+signal_test_producer() {
+    local signal=$1 pid=$2 pgid
+    pgid=$(ps -o pgid= -p "$pid" 2>/dev/null || true)
+    pgid=${pgid//[[:space:]]/}
+    if [[ -n $pgid && $pgid == "$pid" ]]; then
+        kill "-$signal" -- "-$pid" 2>/dev/null || kill "-$signal" "$pid" 2>/dev/null || true
+    else
+        kill "-$signal" "$pid" 2>/dev/null || true
+    fi
+}
+stop_test_producers() {
+    local pid found empty_samples=0
+    # A refresh can publish its producer as teardown begins. Require several
+    # consecutive empty samples instead of treating one empty sample as stable.
     for _ in {1..100}; do
-        [[ -z $(producer_pids_for_test) ]] && break
+        found=false
+        while IFS= read -r pid; do
+            [[ -n $pid ]] || continue
+            found=true
+            signal_test_producer TERM "$pid"
+        done < <(producer_pids_for_test)
+        if $found; then
+            empty_samples=0
+        else
+            empty_samples=$((empty_samples + 1))
+            (( empty_samples < 5 )) || break
+        fi
         sleep 0.01
     done
-    while IFS= read -r pid; do [[ -z $pid ]] || kill -KILL "$pid" 2>/dev/null; done < <(producer_pids_for_test)
+    while IFS= read -r pid; do
+        [[ -z $pid ]] || signal_test_producer KILL "$pid"
+    done < <(producer_pids_for_test)
+    return 0
+}
+cleanup_test() {
+    set +e
+    stop_test_producers
     rm -rf "$tmp"
 }
 trap cleanup_test EXIT
+trap '[[ $- != *e* ]] || printf "manager test failed at line %s: %s\n" "$LINENO" "$BASH_COMMAND" >&2' ERR
 
 export GIT_CONFIG_COUNT=1
 export GIT_CONFIG_KEY_0=core.fsmonitor
@@ -95,12 +126,16 @@ if [[ ${1:-} == workspace && ${2:-} == list ]]; then
         for _ in $(seq 1 100); do [[ -e $TEST_FIRST_ROW ]] && break; sleep 0.02; done
         [[ -e $TEST_FIRST_ROW ]] || { printf 'first row was blocked by Herdr discovery\n' >&2; exit 1; }
     fi
+    extra_workspace=
+    if [[ -n ${TEST_EXTRA_WORKSPACE_PATH:-} ]]; then
+        extra_workspace=",{\"workspace_id\":\"${TEST_EXTRA_WORKSPACE_ID:-w-extra}\",\"worktree\":{\"checkout_path\":\"$TEST_EXTRA_WORKSPACE_PATH\",\"repo_key\":\"$TEST_REPO_B/.git\",\"repo_name\":\"repo-b\",\"repo_root\":\"$TEST_REPO_B\"}}"
+    fi
     cat <<JSON
 {"result":{"workspaces":[
  {"workspace_id":"w1","worktree":{"checkout_path":"$TEST_REPO_A","repo_key":"$TEST_REPO_A/.git","repo_name":"repo a","repo_root":"$TEST_REPO_A"}},
  {"workspace_id":"w2","worktree":{"checkout_path":"$TEST_FEATURE_A","repo_key":"$TEST_REPO_A/.git","repo_name":"repo a","repo_root":"$TEST_REPO_A"}},
  {"workspace_id":"w3","worktree":{"checkout_path":"$TEST_REPO_B","repo_name":"repo-b","repo_root":"$TEST_REPO_B"}},
- {"workspace_id":"w4","worktree":{"checkout_path":"$TEST_FEATURE_B","repo_key":"$TEST_REPO_B/.git","repo_name":"repo-b","repo_root":"$TEST_REPO_B"}}
+ {"workspace_id":"w4","worktree":{"checkout_path":"$TEST_FEATURE_B","repo_key":"$TEST_REPO_B/.git","repo_name":"repo-b","repo_root":"$TEST_REPO_B"}}$extra_workspace
 ]}}
 JSON
 elif [[ ${1:-} == worktree && ${2:-} == list ]]; then
@@ -108,7 +143,10 @@ elif [[ ${1:-} == worktree && ${2:-} == list ]]; then
     for ((i=1; i<=$#; i++)); do
         [[ ${!i} != --cwd ]] || { j=$((i+1)); repo=${!j}; }
     done
-    if [[ $repo == "$TEST_REPO_A" ]]; then id=w1; name='repo a'; else id=w3; name=repo-b; fi
+    if [[ $repo == "$TEST_REPO_A" || $repo == "$TEST_FEATURE_A" ]]; then id=w1; name='repo a'; root=$TEST_REPO_A
+    else id=w3; name=repo-b; root=$TEST_REPO_B
+    fi
+    repo=$root
     printf '{"result":{"source":{"repo_root":"%s","repo_name":"%s","source_workspace_id":"%s"}}}\n' "$repo" "$name" "$id"
 elif [[ ${1:-} == workspace && ${2:-} == create ]]; then
     printf '{"result":{"workspace":{"workspace_id":"new-root"}}}\n'
@@ -145,7 +183,24 @@ JSON
     exit
 fi
 if [[ " $* " == *' remove '* ]]; then
+    [[ -z ${TEST_WT_REMOVE_CWD_FILE:-} ]] || pwd -P >"$TEST_WT_REMOVE_CWD_FILE"
+    [[ -z ${TEST_WT_UMASK_FILE:-} ]] || umask >"$TEST_WT_UMASK_FILE"
+    [[ -z ${TEST_WT_REMOVE_STARTED:-} ]] || : >"$TEST_WT_REMOVE_STARTED"
+    [[ -z ${TEST_WT_REMOVE_DELAY:-} ]] || sleep "$TEST_WT_REMOVE_DELAY"
+    if [[ ${TEST_WT_REMOVE_FAIL_AFTER_MUTATE:-false} == true ]]; then
+        "$TEST_REAL_GIT" -C "$repo" worktree remove --force "$TEST_WT_REMOVE_PATH"
+        printf 'interrupted after metadata removal\n' >&2
+        exit 1
+    fi
     [[ ${TEST_WT_REMOVE_FAIL:-false} != true ]]
+    [[ ${TEST_WT_REMOVE_PROGRESS:-false} != true ]] || printf 'Removing worktree files...\n' >&2
+    target=${@: -1}
+    if [[ ${TEST_WT_REMOVE_MUTATE:-false} == true ]]; then
+        "$TEST_REAL_GIT" -C "$repo" worktree unlock "$TEST_WT_REMOVE_PATH" >/dev/null 2>&1 || true
+        "$TEST_REAL_GIT" -C "$repo" worktree remove --force "$TEST_WT_REMOVE_PATH"
+    fi
+    printf '[{"kind":"worktree","branch":"%s","path":"%s","branch_outcome":"deleted","branch_checked_out_at":null}]\n' \
+        "$target" "${TEST_WT_REMOVE_PATH:-$target}"
     exit
 fi
 if [[ " $* " == *' switch '* ]]; then
@@ -952,7 +1007,9 @@ grep -Fq 'unbind(change)' "$TEST_FZF_ARGS"
 grep -Fq 'rebind(change)' "$TEST_FZF_ARGS"
 grep -Fq 'transform-footer(' "$TEST_FZF_ARGS"
 remove_binding=$(grep -F -- '--bind=d:transform:' "$TEST_FZF_ARGS")
-grep -Fq 'exclude+transform-footer(' <<<"$remove_binding"
+grep -Fq '__queue-remove' <<<"$remove_binding"
+grep -Fq 'transform-footer(' <<<"$remove_binding"
+! grep -Fq 'exclude' <<<"$remove_binding"
 ! grep -Fq '+reload(' <<<"$remove_binding"
 grep -Fq 'show-input+clear-query+enable-search+change-prompt(/ )+change-ghost(search branches)' "$TEST_FZF_ARGS"
 grep -Fq 'hide-input' "$TEST_FZF_ARGS"
@@ -1008,37 +1065,221 @@ printf 'manage\n' >"$state/mode"
 bash "$plugin_root/manager.sh" __rows "$state" >"$tmp/refreshed"
 grep -Fq 'refreshed' "$tmp/refreshed"
 
+# Approved removal is queued durably and returns while the detached worker is
+# still in the backend. The popup may disappear without cancelling the job,
+# duplicate active work is rejected atomically, and the worker runs from the
+# stable primary checkout with the user's umask, so hooks behave as they would
+# interactively. The worker must own a separate process group/session because
+# Herdr terminates every process in a popup terminal's session on close.
+# Backend progress on stderr is diagnostic only and never becomes a warning.
+b_payload=$(payload_for ' feature-b ' "$tmp/skeleton-candidates")
+ln -s "$tmp" "$tmp/path-alias"
+queue_path="$tmp/path-alias/repo-b.queue-remove"
+"$git_bin" -C "$repo_b" worktree add -q -b queue-remove "$queue_path"
+queue_git_path=$(cd "$queue_path" && pwd -P)
+queue_payload=$("$jq_bin" -cn --arg root "$repo_b" --arg path "$queue_git_path" \
+    '{kind:"worktree",target:"queue-remove",path:$path,repo_root:$root,repo_key:($root+"/.git"),repo_name:"repo-b"}' \
+    | base64 | tr -d '\n')
+queue_state="$tmp/queue-state"; new_state "$queue_state"; printf '0\n' >"$queue_state/generation"
+test_umask=$(umask)
+export TEST_WT_REMOVE_DELAY=1 TEST_WT_REMOVE_STARTED="$tmp/remove-started" TEST_WT_REMOVE_PROGRESS=true \
+    TEST_WT_REMOVE_CWD_FILE="$tmp/remove-cwd" TEST_WT_UMASK_FILE="$tmp/remove-umask" \
+    TEST_WT_REMOVE_MUTATE=true TEST_WT_REMOVE_PATH="$queue_git_path" \
+    TEST_EXTRA_WORKSPACE_PATH="$queue_path" TEST_EXTRA_WORKSPACE_ID=wq MANAGER_BACKGROUND_NOTIFY=false
+: >"$TEST_CAPTURE"
+job_id=$(bash "$plugin_root/manager.sh" __queue-remove "$queue_state" "$queue_payload" false)
+job_dir="$FORESTR_REMOVAL_STATE_DIR/jobs/$job_id"
+[[ -f $job_dir/request.json && -f $job_dir/record.json && -f $job_dir/backend.log && -f $job_dir/action.log ]]
+grep -Fq 'closing this popup will not cancel' "$queue_state/action-warning"
+for _ in {1..100}; do [[ -e $TEST_WT_REMOVE_STARTED ]] && break; sleep 0.01; done
+[[ -e $TEST_WT_REMOVE_STARTED ]]
+case $("$jq_bin" -r .status "$job_dir/record.json") in queued|running) ;; *) exit 1 ;; esac
+rm -f "$queue_state/action-warning"
+bash "$plugin_root/manager.sh" __footer "$queue_state" >"$tmp/active-removal-footer"
+grep -Fq 'Safety checks' "$tmp/active-removal-footer"
+worker_pid=$("$jq_bin" -r .pid "$job_dir/record.json")
+worker_pgid=$(ps -o pgid= -p "$worker_pid" | tr -d ' ')
+[[ $worker_pgid == "$worker_pid" ]]
+bash "$plugin_root/manager.sh" __reconcile-removals
+case $("$jq_bin" -r .status "$job_dir/record.json") in queued|running) ;; *) exit 1 ;; esac
+if bash "$plugin_root/manager.sh" __queue-remove "$queue_state" "$queue_payload" false 2>/dev/null; then
+    printf 'duplicate active removal was accepted\n' >&2; exit 1
+fi
+grep -Fq 'already active' "$queue_state/error"
+rm -rf "$queue_state" # detaching the popup must not cancel approved work
+for _ in {1..300}; do
+    case $("$jq_bin" -r .status "$job_dir/record.json" 2>/dev/null || true) in succeeded|warning|failed) break ;; esac
+    sleep 0.02
+done
+[[ $("$jq_bin" -r .status "$job_dir/record.json") == succeeded ]]
+[[ $(cat "$tmp/remove-cwd") == "$repo_b" ]]
+[[ $(cat "$tmp/remove-umask") == "$test_umask" ]]
+for _ in {1..100}; do
+    grep -Fq 'herdr <notification> <show> <Forestr removed queue-remove>' "$TEST_CAPTURE" 2>/dev/null && break
+    sleep 0.01
+done
+grep -Fq 'herdr <workspace> <close> <wq>' "$TEST_CAPTURE"
+grep -Fq 'herdr <notification> <show> <Forestr removed queue-remove>' "$TEST_CAPTURE"
+grep -Fq 'Removed queue-remove.' <(bash "$plugin_root/manager.sh" __latest-removal-status)
+# Finished results are delivered once; an idle footer or a later launch never
+# replays them.
+later_state="$tmp/later-state"; new_state "$later_state"
+bash "$plugin_root/manager.sh" __footer "$later_state" >"$tmp/idle-after-removal-footer"
+! grep -Fq 'queue-remove' "$tmp/idle-after-removal-footer"
+[[ ! -s $later_state/action-warning && ! -s $later_state/error ]]
+unset TEST_WT_REMOVE_DELAY TEST_WT_REMOVE_STARTED TEST_WT_REMOVE_PROGRESS TEST_WT_REMOVE_CWD_FILE TEST_WT_UMASK_FILE TEST_WT_REMOVE_MUTATE \
+    TEST_WT_REMOVE_PATH TEST_EXTRA_WORKSPACE_PATH TEST_EXTRA_WORKSPACE_ID MANAGER_BACKGROUND_NOTIFY
+
+# While the popup is still open, the result lands in its footer instead of a
+# Herdr notification, and the next refresh clears it like any other message.
+open_path="$tmp/repo-b.open-remove"
+"$git_bin" -C "$repo_b" worktree add -q -b open-remove "$open_path"
+open_payload=$("$jq_bin" -cn --arg root "$repo_b" --arg path "$open_path" \
+    '{kind:"worktree",target:"open-remove",path:$path,repo_root:$root,repo_key:($root+"/.git"),repo_name:"repo-b"}' \
+    | base64 | tr -d '\n')
+open_state="$tmp/open-state"; new_state "$open_state"; printf '0\n' >"$open_state/generation"
+( cd "$open_state" && python3 -c 'import socket; s=socket.socket(socket.AF_UNIX); s.bind("fzf.sock"); import time; time.sleep(30)' ) &
+fake_sock_pid=$!
+for _ in {1..100}; do [[ -S $open_state/fzf.sock ]] && break; sleep 0.01; done
+export TEST_WT_REMOVE_MUTATE=true TEST_WT_REMOVE_PATH="$open_path" MANAGER_BACKGROUND_NOTIFY=false
+: >"$TEST_CAPTURE"
+open_job=$(bash "$plugin_root/manager.sh" __queue-remove "$open_state" "$open_payload" false)
+for _ in {1..300}; do
+    case $("$jq_bin" -r .status "$FORESTR_REMOVAL_STATE_DIR/jobs/$open_job/record.json" 2>/dev/null || true) in succeeded|warning|failed) break ;; esac
+    sleep 0.02
+done
+for _ in {1..100}; do grep -Fq 'Removed open-remove.' "$open_state/action-warning" 2>/dev/null && break; sleep 0.01; done
+grep -Fq 'Removed open-remove.' "$open_state/action-warning"
+! grep -Fq 'herdr <notification> <show>' "$TEST_CAPTURE"
+bash "$plugin_root/manager.sh" __refresh "$open_state"
+bash "$plugin_root/manager.sh" __footer "$open_state" >"$tmp/refreshed-footer"
+! grep -Fq 'open-remove' "$tmp/refreshed-footer"
+kill "$fake_sock_pid" 2>/dev/null || true
+unset TEST_WT_REMOVE_MUTATE TEST_WT_REMOVE_PATH MANAGER_BACKGROUND_NOTIFY
+
+# Reopen reconciliation uses the exact PID/start token and authoritative Git
+# topology. A fresh pid-less setup record gets a portable epoch-based grace
+# period; an abandoned one is reconciled after that grace expires.
+grace_job="$FORESTR_REMOVAL_STATE_DIR/jobs/zy-setup-grace"
+grace_lock="$FORESTR_REMOVAL_STATE_DIR/active/zy-setup-grace"
+mkdir -p "$grace_job" "$grace_lock"
+now_epoch=$(date '+%s')
+"$jq_bin" -cn --arg root "$repo_b" --arg path "$feature_b" --arg lock "$grace_lock" --argjson created "$now_epoch" \
+    '{status:"queued",pid:0,start_token:"",created_epoch:$created,repo_root:$root,repo_name:"repo-b",path:$path,target:"feature-b",workspace_id:"w4",lock_dir:$lock,source:false}' \
+    >"$grace_job/record.json"
+: >"$TEST_CAPTURE"
+bash "$plugin_root/manager.sh" __reconcile-removals
+[[ $("$jq_bin" -r .status "$grace_job/record.json") == queued && -d $grace_lock ]]
+"$jq_bin" --argjson old "$((now_epoch - 120))" '.created_epoch = $old' "$grace_job/record.json" >"$grace_job/record.new"
+mv "$grace_job/record.new" "$grace_job/record.json"
+bash "$plugin_root/manager.sh" __reconcile-removals
+[[ $("$jq_bin" -r .status "$grace_job/record.json") == failed && ! -d $grace_lock ]]
+! grep -Fq 'herdr <workspace> <close>' "$TEST_CAPTURE"
+
+# Registered paths fail safely without closing; absent paths close a stale
+# workspace and persist an interrupted-removal warning.
+mkdir -p "$FORESTR_REMOVAL_STATE_DIR/jobs/zz-registered" "$FORESTR_REMOVAL_STATE_DIR/active/zz-registered"
+"$jq_bin" -cn --arg root "$repo_b" --arg path "$feature_b" --arg lock "$FORESTR_REMOVAL_STATE_DIR/active/zz-registered" \
+    '{status:"running",pid:999999,start_token:"dead",repo_root:$root,repo_name:"repo-b",path:$path,target:"feature-b",workspace_id:"w4",lock_dir:$lock,source:false}' \
+    >"$FORESTR_REMOVAL_STATE_DIR/jobs/zz-registered/record.json"
+: >"$TEST_CAPTURE"
+bash "$plugin_root/manager.sh" __reconcile-removals
+[[ $("$jq_bin" -r .status "$FORESTR_REMOVAL_STATE_DIR/jobs/zz-registered/record.json") == failed ]]
+! grep -Fq 'herdr <workspace> <close>' "$TEST_CAPTURE"
+mkdir -p "$FORESTR_REMOVAL_STATE_DIR/jobs/zzz-absent" "$FORESTR_REMOVAL_STATE_DIR/active/zzz-absent"
+gone_path="$tmp/no-longer-registered"
+"$jq_bin" -cn --arg root "$repo_b" --arg path "$gone_path" --arg lock "$FORESTR_REMOVAL_STATE_DIR/active/zzz-absent" \
+    '{status:"queued",pid:999999,start_token:"dead",repo_root:$root,repo_name:"repo-b",path:$path,target:"gone",workspace_id:"wgone",lock_dir:$lock,source:false}' \
+    >"$FORESTR_REMOVAL_STATE_DIR/jobs/zzz-absent/record.json"
+: >"$TEST_CAPTURE"
+export TEST_EXTRA_WORKSPACE_PATH="$gone_path" TEST_EXTRA_WORKSPACE_ID=wgone
+bash "$plugin_root/manager.sh" __reconcile-removals
+unset TEST_EXTRA_WORKSPACE_PATH TEST_EXTRA_WORKSPACE_ID
+[[ $("$jq_bin" -r .status "$FORESTR_REMOVAL_STATE_DIR/jobs/zzz-absent/record.json") == warning ]]
+grep -Fq 'herdr <workspace> <close> <wgone>' "$TEST_CAPTURE"
+grep -Fq 'interrupted after Git stopped registering it' <(bash "$plugin_root/manager.sh" __latest-removal-status)
+
+mkdir -p "$FORESTR_REMOVAL_STATE_DIR/jobs/zzzz-mismatch" "$FORESTR_REMOVAL_STATE_DIR/active/zzzz-mismatch"
+mismatch_path="$tmp/no-longer-registered-mismatch"
+"$jq_bin" -cn --arg root "$repo_b" --arg path "$mismatch_path" --arg lock "$FORESTR_REMOVAL_STATE_DIR/active/zzzz-mismatch" \
+    '{status:"running",pid:999999,start_token:"dead",repo_root:$root,repo_name:"repo-b",path:$path,target:"mismatch",workspace_id:"old-id",lock_dir:$lock,source:false}' \
+    >"$FORESTR_REMOVAL_STATE_DIR/jobs/zzzz-mismatch/record.json"
+: >"$TEST_CAPTURE"
+export TEST_EXTRA_WORKSPACE_PATH="$mismatch_path" TEST_EXTRA_WORKSPACE_ID=new-id
+bash "$plugin_root/manager.sh" __reconcile-removals
+unset TEST_EXTRA_WORKSPACE_PATH TEST_EXTRA_WORKSPACE_ID
+[[ $("$jq_bin" -r .status "$FORESTR_REMOVAL_STATE_DIR/jobs/zzzz-mismatch/record.json") == failed ]]
+! grep -Fq 'herdr <workspace> <close>' "$TEST_CAPTURE"
+
+# Missing Git registration alone is not removal: an existing checkout path is
+# retained and its workspace is never closed.
+mkdir -p "$FORESTR_REMOVAL_STATE_DIR/jobs/zzzz-present" "$FORESTR_REMOVAL_STATE_DIR/active/zzzz-present" "$tmp/unregistered-present"
+"$jq_bin" -cn --arg root "$repo_b" --arg path "$tmp/unregistered-present" --arg lock "$FORESTR_REMOVAL_STATE_DIR/active/zzzz-present" \
+    '{status:"running",pid:999999,start_token:"dead",repo_root:$root,repo_name:"repo-b",path:$path,target:"present",workspace_id:"wpresent",lock_dir:$lock,source:false}' \
+    >"$FORESTR_REMOVAL_STATE_DIR/jobs/zzzz-present/record.json"
+: >"$TEST_CAPTURE"
+export TEST_EXTRA_WORKSPACE_PATH="$tmp/unregistered-present" TEST_EXTRA_WORKSPACE_ID=wpresent
+bash "$plugin_root/manager.sh" __reconcile-removals
+unset TEST_EXTRA_WORKSPACE_PATH TEST_EXTRA_WORKSPACE_ID
+[[ $("$jq_bin" -r .status "$FORESTR_REMOVAL_STATE_DIR/jobs/zzzz-present/record.json") == failed ]]
+! grep -Fq 'herdr <workspace> <close>' "$TEST_CAPTURE"
+mkdir -p "$FORESTR_REMOVAL_STATE_DIR/jobs/zzzzz-malformed"
+printf '{not json\n' >"$FORESTR_REMOVAL_STATE_DIR/jobs/zzzzz-malformed/record.json"
+bash "$plugin_root/manager.sh" __reconcile-removals
+[[ -n $(bash "$plugin_root/manager.sh" __latest-removal-status) ]]
+
 # Removal remains Worktrunk-owned. Herdr closes only after successful removal;
 # force uses the safe stale/prunable fallback flags.
 : >"$TEST_CAPTURE"
-b_payload=$(payload_for ' feature-b ' "$tmp/skeleton-candidates")
+export TEST_WT_REMOVE_MUTATE=true TEST_WT_REMOVE_PATH="$feature_b"
 bash "$plugin_root/manager.sh" __remove "$state" "$b_payload" false
-grep -Fq "wt <-C> <$repo_b> <remove> <--foreground> <--format=json> <feature-b>" "$TEST_CAPTURE"
+unset TEST_WT_REMOVE_MUTATE TEST_WT_REMOVE_PATH
+grep -Fq "wt <-C> <$repo_b> <remove> <--foreground> <--format=json> <$feature_b>" "$TEST_CAPTURE"
 grep -Fq 'herdr <workspace> <close> <w4>' "$TEST_CAPTURE"
 ! grep -Fq 'herdr <worktree> <remove>' "$TEST_CAPTURE"
+
+# A backend error after irreversible Git mutation is reconciled from stable
+# topology; only the exactly matching stale workspace is closed.
+partial_path="$tmp/repo-b.partial-remove"
+"$git_bin" -C "$repo_b" worktree add -q -b partial-remove "$partial_path"
+partial_payload=$("$jq_bin" -cn --arg root "$repo_b" --arg path "$partial_path" \
+    '{kind:"worktree",target:"partial-remove",path:$path,repo_root:$root,repo_name:"repo-b"}' | base64 | tr -d '\n')
+: >"$TEST_CAPTURE"
+export TEST_WT_REMOVE_FAIL_AFTER_MUTATE=true TEST_WT_REMOVE_PATH="$partial_path" \
+    TEST_EXTRA_WORKSPACE_PATH="$partial_path" TEST_EXTRA_WORKSPACE_ID=wpartial
+bash "$plugin_root/manager.sh" __remove "$state" "$partial_payload" false
+unset TEST_WT_REMOVE_FAIL_AFTER_MUTATE TEST_WT_REMOVE_PATH TEST_EXTRA_WORKSPACE_PATH TEST_EXTRA_WORKSPACE_ID
+grep -Fq 'herdr <workspace> <close> <wpartial>' "$TEST_CAPTURE"
+grep -Fq 'interrupted after Git stopped registering it' "$state/action-warning"
+
 stale_payload=$("$jq_bin" -cn --arg root "$repo_b" --arg path "$tmp/missing path" \
     '{kind:"worktree",target:"stale",path:$path,repo_root:$root,repo_name:"repo-b"}' | base64 | tr -d '\n')
 : >"$TEST_CAPTURE"
 bash "$plugin_root/manager.sh" __remove "$state" "$stale_payload" false
-grep -Fq '<remove> <--foreground> <--format=json> <stale>' "$TEST_CAPTURE"
+grep -Fq "<remove> <--foreground> <--format=json> <$tmp/missing path>" "$TEST_CAPTURE"
 ! grep -Fq '<--force>' "$TEST_CAPTURE"
 : >"$TEST_CAPTURE"
 bash "$plugin_root/manager.sh" __remove "$state" "$stale_payload" true
-grep -Fq '<--force> <--force-delete> <stale>' "$TEST_CAPTURE"
+grep -Fq "<--force> <--force-delete> <$tmp/missing path>" "$TEST_CAPTURE"
 
 # Deleting the manager's source resolves/focuses the root before closing the
-# source workspace. The special status tells the popup to close.
+# source workspace. The mutation command may be rooted in the linked source
+# checkout, but authoritative reconciliation must use the stable primary root.
+source_payload=$("$jq_bin" -Rnr --arg payload "$feature_payload" --arg root "$feature_a" \
+    '$payload | @base64d | fromjson | .repo_root = $root | tojson | @base64')
 : >"$TEST_CAPTURE"
+export TEST_WT_REMOVE_MUTATE=true TEST_WT_REMOVE_PATH="$feature_a"
 set +e
-bash "$plugin_root/manager.sh" __remove "$state" "$feature_payload" false
+bash "$plugin_root/manager.sh" __remove "$state" "$source_payload" false
 source_status=$?
 set -e
+unset TEST_WT_REMOVE_MUTATE TEST_WT_REMOVE_PATH
 [[ $source_status -eq 10 ]]
-resolve_line=$(grep -nF "herdr <worktree> <list> <--cwd> <$repo_a>" "$TEST_CAPTURE" | cut -d: -f1)
-remove_line=$(grep -nF "wt <-C> <$repo_a> <remove>" "$TEST_CAPTURE" | cut -d: -f1)
+resolve_line=$(grep -nF "herdr <worktree> <list> <--cwd> <$feature_a>" "$TEST_CAPTURE" | cut -d: -f1)
+remove_line=$(grep -nF "wt <-C> <$feature_a> <remove>" "$TEST_CAPTURE" | cut -d: -f1)
 focus_line=$(grep -nF 'herdr <workspace> <focus> <w1>' "$TEST_CAPTURE" | cut -d: -f1)
 close_line=$(grep -nF 'herdr <workspace> <close> <w2>' "$TEST_CAPTURE" | cut -d: -f1)
-[[ $resolve_line -lt $remove_line && $remove_line -lt $focus_line && $focus_line -lt $close_line ]]
+[[ $resolve_line -lt $focus_line && $focus_line -lt $remove_line && $remove_line -lt $close_line ]]
 
 # Action failures are persisted at the public worker seam so fzf transforms,
 # whose stderr/stdin are /dev/null, can render them in the fixed status area.
@@ -1052,6 +1293,7 @@ grep -Fq 'Worktrunk could not open local-free' "$state/error"
 
 # Worktrunk failure leaves Herdr untouched and propagates failure for fzf to
 # retain the current mode while background discovery reconciles the snapshot.
+"$git_bin" -C "$repo_b" worktree add -q "$feature_b" feature-b
 : >"$TEST_CAPTURE"
 export TEST_WT_REMOVE_FAIL=true
 if bash "$plugin_root/manager.sh" __remove "$state" "$b_payload" false </dev/null 2>"$tmp/remove-error"; then
@@ -1085,13 +1327,18 @@ grep -Fq '…' <(sed -n '2p' "$tmp/action-warning-footer.plain")
 export ACTIVE_REPO_ROOT="" MANAGER_SOURCE_CHECKOUT_PATH=""
 non_git_state="$tmp/non-git-state"; new_state "$non_git_state"
 bash "$plugin_root/manager.sh" __rows "$non_git_state" >"$TEST_CANDIDATES"
-grep -Fq 'feature-a' "$TEST_CANDIDATES"
+grep -Fq 'refreshed' "$TEST_CANDIDATES"
 grep -Fq 'feature-b' "$TEST_CANDIDATES"
 bash "$plugin_root/manager.sh" __enter-repository "$non_git_state" ''
 bash "$plugin_root/manager.sh" __rows "$non_git_state" >"$tmp/non-git-repositories"
 grep -Fq "$repo_a" "$tmp/non-git-repositories"
 grep -Fq "$repo_b" "$tmp/non-git-repositories"
 export ACTIVE_REPO_ROOT="$repo_a" MANAGER_SOURCE_CHECKOUT_PATH="$feature_a"
+
+# Standalone worker-seam assertions above intentionally launch refreshes without
+# a popup owner. Stop them before testing the real popup teardown in isolation.
+stop_test_producers
+[[ -z $(producer_pids_for_test) ]]
 
 # fzf failures are surfaced, and signals promptly cancel a producer that cannot
 # finish naturally within the assertion window before removing its state dir.
@@ -1115,6 +1362,10 @@ unset TEST_FZF_BLOCK TEST_GIT_LIST_DELAY TEST_GIT_LIST_MARKER
 [[ $signal_status -eq 143 ]]
 ! compgen -G "$tmp/signal-tmp/forestr.*" >/dev/null
 for _ in {1..100}; do [[ -z $(producer_pids_for_test) ]] && break; sleep 0.01; done
-[[ -z $(producer_pids_for_test) ]]
+if [[ -n $(producer_pids_for_test) ]]; then
+    printf 'manager producers remained after teardown:\n' >&2
+    ps -ww -axo pid=,ppid=,pgid=,state=,command= | grep '[m]anager.sh __produce' >&2 || true
+    exit 1
+fi
 
 printf 'manager tests passed\n'

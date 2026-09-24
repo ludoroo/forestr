@@ -20,6 +20,7 @@ Forestr supports **Linux and macOS** and requires:
 - `jq`
 - `fzf` 0.74 or newer, including `--track`, `--id-nth`, `--listen-unsafe`, transform actions, input/footer borders, and component color options
 - `curl` built with Unix-socket support (`--unix-socket`)
+- A session-detach launcher for removal workers: `setsid` on Linux, or Perl with `POSIX::setsid` (provided by macOS's system Perl)
 
 Optional backend tooling:
 
@@ -72,7 +73,11 @@ The create wizard is repository-first: choose a repository, then choose an exist
 
 The budget covers Worktrunk's collection phase. If broader `wt list` setup stalls, the existing Git rows remain usable; refreshing or closing the popup terminates the background producer.
 
-The initial active-repository row is rendered before global Herdr discovery finishes. Refresh work is generation-scoped, and stale background output cannot replace a newer snapshot. Operation results use a fixed two-row footer status area, so their fzf transforms do not synchronously rebuild the candidate list. Successful removals hide the selected row immediately; background discovery may later reload candidates to reconcile partial mutations and authoritative state.
+The initial active-repository row is rendered before global Herdr discovery finishes. Refresh work is generation-scoped, and stale background output cannot replace a newer snapshot. Operation results use a fixed two-row footer status area, so their fzf transforms do not synchronously rebuild the candidate list.
+
+Removals are durable asynchronous jobs. Pressing `d` or `D` approves and queues the operation, immediately reports that safety checks, hooks, and file deletion are running, and leaves the row visible until an authoritative refresh. Closing the popup, pressing `q`/`Esc`, or closing the source workspace does **not** cancel an approved removal. There is deliberately no post-approval cancel key because neither backend exposes a reliable irreversible boundary. Final results are sent as Herdr notifications and shown when Forestr is next opened.
+
+Removal records and logs are retained under `${XDG_STATE_HOME:-$HOME/.local/state}/forestr/removals`. Set `FORESTR_REMOVAL_STATE_DIR` to override this location (especially in tests). On startup, Forestr reconciles interrupted queued/running jobs against `git worktree list`: registered worktrees, surviving checkout paths, and unknown topology are retained. Only a missing registration plus a missing original path can close an exactly revalidated stale Herdr workspace.
 
 The manager shows a bounded commit-log preview for the selected worktree. It follows only that worktree's `HEAD` ancestry—never `--all`—uses one fixed-width line per commit, and is capped at 25 commits to remain readable in busy repositories. Change statistics are compacted (for example, `4k`) and the author column is omitted when space is tight. Press `p` to toggle the preview. It moves below the list when the side panel would be too narrow and stays hidden in the create wizard.
 
@@ -87,7 +92,7 @@ Forestr intentionally validates selected repositories, refs, and canonical check
 - uses force worktree/branch deletion only for explicit `D`;
 - does not support branch clobber in Git mode and leaves a newly created checkout in place if post-create verification fails, so it can be inspected rather than destructively rolled back.
 
-Worktrunk operations preserve Worktrunk's own hooks and safety checks; Forestr does not pass hook-disabling flags.
+Worktrunk operations preserve Worktrunk's own hooks and safety checks; Forestr does not pass hook-disabling flags. Removal workers run in a separate OS session with redirected standard streams, so Herdr can shut down the popup terminal runtime without terminating an approved job. Workers use the stable primary checkout as their working directory, never the linked checkout being removed.
 
 ## Configuration
 

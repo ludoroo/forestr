@@ -70,6 +70,8 @@ key_create = "c"
 key_new = "n"
 key_back = "h"
 key_force_create = "C"
+# Removal approval is durable and asynchronous. Once either key queues a job,
+# closing the popup does not cancel it; there is intentionally no cancel key.
 key_remove = "d"
 key_force_remove = "D"
 key_local = "l"

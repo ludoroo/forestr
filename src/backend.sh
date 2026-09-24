@@ -104,7 +104,7 @@ backend_validate_result() {
              (.path | type == "string" and length > 0) and (.branch | type == "string")
            elif $operation == "remove" then
              (.removed_worktree == true) and (.branch_outcome | IN("deleted","not_applicable",
-               "retained_unmerged","retained_checked_out","retained_failed"))
+               "retained_unmerged","retained_checked_out","retained_raced","retained_failed"))
              and (.warning | type == "string")
            elif $operation == "enrich" then
              (.items | type == "array") and all(.items[];

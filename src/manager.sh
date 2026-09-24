@@ -473,6 +473,9 @@ process_start_token() {
     printf '%s\n' "$token"
 }
 
+# shellcheck source=./removal_jobs.sh
+source "$plugin_root/removal_jobs.sh"
+
 producer_process_matches() {
     local pid=$1 state_dir=$2 generation=$3 token=$4 current_token command
     current_token=$(process_start_token "$pid" 2>/dev/null || true)
@@ -1038,7 +1041,14 @@ open_target() {
 remove_target() {
     local repo_root=$1 repo_name=$2 kind=$3 target=$4 worktree_path=$5 force=${6:-false}
     local canonical_path workspace_id source_canonical is_source=false source_json root_workspace_id
-    local resolved_repo_root resolved_repo_name create_json request result message warning
+    local resolved_repo_root resolved_repo_name create_json request result message warning backend_status=0 topology backend_ok=false
+    local probe_repo_root=${FORESTR_REMOVAL_PROBE_ROOT:-}
+    local removal_workspace_path=${FORESTR_REMOVAL_WORKSPACE_PATH:-$worktree_path}
+    if [[ -z $probe_repo_root ]]; then
+        # Resolve the stable primary checkout before any mutation: the selected
+        # repo_root may be the linked checkout that is about to disappear.
+        probe_repo_root=$(removal_primary_root "$repo_root" || printf '%s\n' "$repo_root")
+    fi
     if [[ $kind != worktree || -z $worktree_path ]]; then
         printf '\033[33mSelect a linked worktree before removing.\033[0m' >&2; pause_after_error; return 1
     fi
@@ -1052,6 +1062,10 @@ remove_target() {
     workspace_id=$(workspace_id_for_path "$canonical_path")
     source_canonical=$(canonical_directory "$manager_source_checkout_path" || printf '%s\n' "$manager_source_checkout_path")
     if [[ -n $workspace_id && $workspace_id == "$manager_source_workspace_id" ]] || [[ -n $source_canonical && $source_canonical == "$canonical_path" ]]; then is_source=true; fi
+
+    # A source checkout must have a safe place to land before any backend hook
+    # or filesystem mutation starts. Herdr plugin popups are session-modal, so
+    # focusing this parent does not dismiss or cancel the approved operation.
     resolved_repo_root=$repo_root; resolved_repo_name=$repo_name; root_workspace_id=
     if $is_source; then
         if ! source_json=$("$herdr" worktree list --cwd "$repo_root"); then
@@ -1062,37 +1076,61 @@ remove_target() {
         resolved_repo_name=$("$jq_bin" -r '.result.source.repo_name // empty' <<<"$source_json")
         root_workspace_id=$("$jq_bin" -r '.result.source.source_workspace_id // empty' <<<"$source_json")
         resolved_repo_root=${resolved_repo_root:-$repo_root}; resolved_repo_name=${resolved_repo_name:-$repo_name}
-    fi
-    request=$("$jq_bin" -cn --arg repo_root "$repo_root" --arg target "$target" --arg path "$worktree_path" \
-        --argjson force "$force" \
-        '{version:1,operation:"remove",repo_root:$repo_root,target:$target,path:$path,force:$force}')
-    if ! result=$(backend_dispatch "$request"); then
-        printf '\033[31mForestr backend could not remove %s.\033[0m' "$target" >&2; pause_after_error; return 1
-    fi
-    if [[ $("$jq_bin" -r '.ok' <<<"$result") != true ]]; then
-        message=$("$jq_bin" -r '.message' <<<"$result")
-        printf '\033[31m%s\033[0m' "$message" >&2; pause_after_error; return 1
-    fi
-    warning=$("$jq_bin" -r '.warning // empty' <<<"$result")
-    if [[ -n $warning ]]; then
-        printf '\033[33m%s\033[0m\n' "$warning" >&2
-        if $is_source; then
-            "$herdr" notification show 'Forestr removed worktree' --body "$warning" --sound none >/dev/null 2>&1 || true
-        fi
-    fi
-    if $is_source; then
         if [[ -z $root_workspace_id ]]; then
             if ! create_json=$("$herdr" workspace create --cwd "$resolved_repo_root" --label "${resolved_repo_name%.git}" --no-focus); then
-                printf '\033[31mWorktree removed, but Herdr could not create its root workspace.\033[0m' >&2; pause_after_error; return 1
+                printf '\033[31mHerdr could not create the root workspace before removal; the worktree was retained.\033[0m' >&2
+                pause_after_error; return 1
             fi
             root_workspace_id=$("$jq_bin" -r '.result.workspace.workspace_id // .result.workspace.id // empty' <<<"$create_json")
         fi
         if [[ -z $root_workspace_id ]] || ! "$herdr" workspace focus "$root_workspace_id" >/dev/null; then
-            printf '\033[31mWorktree removed, but Herdr could not focus its root workspace.\033[0m' >&2; pause_after_error; return 1
+            printf '\033[31mHerdr could not focus the root workspace before removal; the worktree was retained.\033[0m' >&2
+            pause_after_error; return 1
         fi
     fi
-    if [[ -n $workspace_id ]] && ! "$herdr" workspace close "$workspace_id" >/dev/null; then
-        printf '\033[31mWorktree removed, but Herdr could not close workspace %s.\033[0m' "$workspace_id" >&2; pause_after_error; return 1
+
+    request=$("$jq_bin" -cn --arg repo_root "$repo_root" --arg target "$target" --arg path "$worktree_path" \
+        --argjson force "$force" \
+        '{version:1,operation:"remove",repo_root:$repo_root,target:$target,path:$path,force:$force}')
+    [[ -z ${FORESTR_REMOVAL_BACKEND_LOG:-} ]] || printf 'request: %s\n' "$request" >>"$FORESTR_REMOVAL_BACKEND_LOG"
+    set +e
+    result=$(backend_dispatch "$request" 2> >(tee -a "${FORESTR_REMOVAL_BACKEND_LOG:-/dev/null}" >&2))
+    backend_status=$?
+    set -e
+    [[ -z ${FORESTR_REMOVAL_BACKEND_LOG:-} ]] || printf 'result: %s\nstatus: %s\n' "$result" "$backend_status" >>"$FORESTR_REMOVAL_BACKEND_LOG"
+    if [[ $backend_status -eq 0 ]] && "$jq_bin" -e '.ok == true' <<<"$result" >/dev/null 2>&1; then backend_ok=true; fi
+    if ! $backend_ok; then
+        # Backend exit status is ambiguous: hooks or the tool may have been
+        # interrupted after Git removed registration. Never close a workspace
+        # while Git still registers it; reconcile only an authoritatively absent
+        # path. If Git itself cannot answer, retain everything.
+        topology=$(removal_registration_state "$probe_repo_root" "$canonical_path")
+        if [[ $topology == absent ]]; then
+            if ! removal_close_workspace_for_path "$probe_repo_root" "$canonical_path" "$workspace_id" "$removal_workspace_path"; then
+                printf '\033[31mRemoval of %s changed Git topology, but the matching workspace could not be safely revalidated and was retained.\033[0m' "$target" >&2
+                pause_after_error; return 1
+            fi
+            printf '\033[33mRemoval of %s was interrupted after Git stopped registering it and its path disappeared; the matching stale workspace was reconciled.\033[0m\n' "$target" >&2
+            $is_source && return 10
+            return 0
+        fi
+        if [[ $backend_status -eq 0 ]]; then message=$("$jq_bin" -r '.message // empty' <<<"$result"); else message="Forestr backend could not remove $target."; fi
+        if [[ $topology == unknown ]]; then
+            message+=" Git topology could not be checked, so the workspace was retained."
+        else
+            message+=" The worktree remains registered or present, so its workspace was retained."
+        fi
+        printf '\033[31m%s\033[0m' "$message" >&2; pause_after_error; return 1
+    fi
+    topology=$(removal_registration_state "$probe_repo_root" "$canonical_path")
+    if [[ $topology != absent ]]; then
+        printf '\033[31mThe backend reported removal, but the worktree remains registered, present, or could not be verified; its workspace was retained.\033[0m' >&2
+        pause_after_error; return 1
+    fi
+    warning=$("$jq_bin" -r '.warning // empty' <<<"$result")
+    [[ -z $warning ]] || printf '\033[33m%s\033[0m\n' "$warning" >&2
+    if ! removal_close_workspace_for_path "$probe_repo_root" "$canonical_path" "$workspace_id" "$removal_workspace_path"; then
+        printf '\033[31mWorktree removed, but the matching Herdr workspace could not be safely revalidated and was retained.\033[0m' >&2; pause_after_error; return 1
     fi
     $is_source && return 10
     return 0
@@ -1129,6 +1167,22 @@ case ${1:-} in
         fi
         exit 0
         ;;
+    __queue-remove)
+        queue_removal_job "$2" "${3:-}" "${4:-false}"
+        exit $?
+        ;;
+    __removal-worker)
+        run_removal_job "$2" "${3:-}"
+        exit $?
+        ;;
+    __reconcile-removals)
+        reconcile_removal_jobs
+        exit 0
+        ;;
+    __latest-removal-status)
+        latest_removal_message
+        exit 0
+        ;;
     __background-rows)
         background_rows "$2" "$3"; exit 0
         ;;
@@ -1136,6 +1190,7 @@ case ${1:-} in
         render_header "$2"; exit 0
         ;;
     __footer)
+        if [[ ! -s $2/error && ! -s $2/action-warning ]]; then restore_active_removal_status "$2"; fi
         render_footer "$2"; exit 0
         ;;
     __worktrunk-status)
@@ -1349,6 +1404,11 @@ trap 'exit 143' TERM
 trap 'exit 130' INT
 printf 'manage\n' >"$state_dir/mode"; printf '%s\n' "$create_scope" >"$state_dir/scope"
 printf 'false\n' >"$state_dir/search"; printf 'true\n' >"$state_dir/preview"; printf '0\n' >"$state_dir/generation"
+# Recover jobs whose exact worker process disappeared, then restate any job
+# that is still running. This state is independent of the popup's temporary
+# directory; finished results were already delivered and are not replayed.
+reconcile_removal_jobs "$state_dir"
+[[ -s $state_dir/error || -s $state_dir/action-warning ]] || restore_active_removal_status "$state_dir"
 
 manager_script_q=$(printf '%q' "$plugin_root/manager.sh")
 preview_script_q=$(printf '%q' "$plugin_root/preview.sh")
@@ -1405,8 +1465,8 @@ manage_normal_actions="$preview_restore_action+$list_normal_actions+change-promp
 # area without rebuilding candidates; success aborts fzf so the common Herdr
 # lifecycle owns focus/open behavior.
 accept_transform="transform:mode=\$(cat $state_q/mode); case \$mode in manage) if $manager_q __open $state_q {1}; then echo abort; else echo '$status_action'; fi ;; repository) if $manager_q __select-repository $state_q {1}; then echo '$source_normal_actions'; else echo '$status_action'; fi ;; source) kind=\$($manager_q __kind {1} 2>/dev/null || true); if [[ \$kind = new ]]; then if $manager_q __new-mode $state_q false; then echo '$new_input_actions'; else echo '$status_action'; fi; elif $manager_q __open $state_q {1}; then echo abort; else echo '$status_action'; fi ;; new) if $manager_q __create $state_q {q}; then echo abort; else echo '$status_action'; fi ;; esac"
-remove_transform="transform:if [[ \$(cat $state_q/mode) != manage ]]; then exit; fi; status=0; $manager_q __remove $state_q {1} false || status=\$?; if [[ \$status = 10 ]]; then echo abort; elif [[ \$status = 0 ]]; then echo 'exclude+$status_action'; else echo '$status_action'; fi"
-force_remove_transform="transform:if [[ \$(cat $state_q/mode) != manage ]]; then exit; fi; status=0; $manager_q __remove $state_q {1} true || status=\$?; if [[ \$status = 10 ]]; then echo abort; elif [[ \$status = 0 ]]; then echo 'exclude+$status_action'; else echo '$status_action'; fi"
+remove_transform="transform:if [[ \$(cat $state_q/mode) != manage ]]; then exit; fi; if $manager_q __queue-remove $state_q {1} false >/dev/null; then echo '$status_action'; else echo '$status_action'; fi"
+force_remove_transform="transform:if [[ \$(cat $state_q/mode) != manage ]]; then exit; fi; if $manager_q __queue-remove $state_q {1} true >/dev/null; then echo '$status_action'; else echo '$status_action'; fi"
 create_transition="transform:if [[ \$(cat $state_q/mode) = manage ]]; then $manager_q __enter-repository $state_q {1}; echo '$repository_normal_actions'; fi"
 new_transition="transform:if [[ \$(cat $state_q/mode) = source ]] && $manager_q __new-mode $state_q false; then echo '$new_input_actions'; fi"
 force_transition="transform:if [[ \$(cat $state_q/mode) = source ]]; then if $manager_q __new-mode $state_q true; then echo '$new_input_actions'; else echo '$status_action'; fi; fi"
@@ -1423,7 +1483,7 @@ if [[ $key_normal != esc ]]; then normal_bind_args+=(--bind="$key_normal:$esc_tr
 open_bind_args=(--bind="enter:$accept_transform")
 if [[ $key_open != enter ]]; then open_bind_args+=(--bind="$key_open:$accept_transform"); fi
 
-start_refresh "$state_dir"
+start_refresh "$state_dir" false true
 initial_snapshot="$state_dir/snapshot.$(current_generation "$state_dir")"
 
 set +e

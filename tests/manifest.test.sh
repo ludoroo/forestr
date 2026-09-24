@@ -75,6 +75,7 @@ export FORESTR_BASH_BIN="$BASH"
 mkdir -p "$tmp/plugin-config"
 printf 'backend = "git"\n' >"$tmp/plugin-config/config.toml"
 export HERDR_PLUGIN_CONFIG_DIR="$tmp/plugin-config"
+export FORESTR_REMOVAL_STATE_DIR="$tmp/removal-state"
 export GIT_CONFIG_COUNT=1
 export GIT_CONFIG_KEY_0=core.fsmonitor
 export GIT_CONFIG_VALUE_0=false

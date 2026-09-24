@@ -32,7 +32,11 @@ case " $* " in
       printf '{"schema":2,"items":[{"branch":"topic","worktree":{"path":"/repo/.topic","branch_mismatch":true,"changes":{"staged":false,"modified":true,"untracked":true,"conflicted":false}},"head":{"short_sha":"abc123"},"display":{"state":"ahead","symbols":"!?⚑↑💬"},"upstream":{"ahead":2,"behind":0},"marker":"💬"}]}\n'
     fi
     ;;
-  *" remove "*) printf '{}\n' ;;
+  *" remove "*)
+    [[ ${TEST_REMOVE_FAIL:-false} != true ]] || { printf 'safety check failed\n' >&2; exit 1; }
+    if [[ ${TEST_REMOVE_INVALID:-false} == true ]]; then printf '{"accepted":true}\n'; exit; fi
+    printf '[{"kind":"worktree","branch":"topic","path":"/repo/.topic","branch_outcome":"%s","branch_checked_out_at":null}]\n' "${TEST_REMOVE_OUTCOME:-deleted}"
+    ;;
   *) printf '{"path":"/repo/.topic","branch":"topic"}\n' ;;
 esac
 EOF
@@ -53,10 +57,35 @@ backend_dispatch "$(request open force-create)" >/dev/null
 # No hook-disabling flag may be introduced.
 ! args "$tmp/args" | grep -Eq 'hook|verify'
 
-backend_dispatch "$(request remove open false)" >/dev/null
+result=$(backend_dispatch "$(request remove open false)")
+"$JQ_BIN" -e '.ok and .removed_worktree and .branch_outcome == "deleted" and .warning == ""' <<<"$result" >/dev/null
 [[ $(args "$tmp/args" | paste -s -d ' ' -) == '-C /repo remove --foreground --format=json topic' ]]
-backend_dispatch "$(request remove open true)" >/dev/null
+result=$(backend_dispatch "$(request remove open true)")
+"$JQ_BIN" -e '.ok and .removed_worktree' <<<"$result" >/dev/null
 [[ $(args "$tmp/args" | paste -s -d ' ' -) == '-C /repo remove --foreground --format=json --force --force-delete topic' ]]
+
+export TEST_REMOVE_OUTCOME=retained_raced
+result=$(backend_dispatch "$(request remove open false)")
+"$JQ_BIN" -e '.ok and .branch_outcome == "retained_raced"
+  and (.warning | contains("changed during removal"))' <<<"$result" >/dev/null
+export TEST_REMOVE_OUTCOME=not_attempted
+result=$(backend_dispatch "$(request remove open false)")
+"$JQ_BIN" -e '.ok and .branch_outcome == "not_applicable"' <<<"$result" >/dev/null
+unset TEST_REMOVE_OUTCOME
+
+export TEST_REMOVE_OUTCOME=deferred
+result=$(backend_dispatch "$(request remove open false)")
+"$JQ_BIN" -e '.ok == false and (.message | contains("incomplete removal result"))' <<<"$result" >/dev/null
+unset TEST_REMOVE_OUTCOME
+export TEST_REMOVE_INVALID=true
+result=$(backend_dispatch "$(request remove open false)")
+"$JQ_BIN" -e '.ok == false and (.message | contains("incomplete removal result"))' <<<"$result" >/dev/null
+unset TEST_REMOVE_INVALID
+export TEST_REMOVE_FAIL=true
+result=$(backend_dispatch "$(request remove open false)" 2>"$tmp/remove-stderr")
+"$JQ_BIN" -e '.ok == false and (.message | contains("did not remove"))' <<<"$result" >/dev/null
+grep -Fq 'safety check failed' "$tmp/remove-stderr"
+unset TEST_REMOVE_FAIL
 
 result=$(backend_dispatch "$($JQ_BIN -cn \
   '{version:1,operation:"enrich",repo_root:"/repo",collection_timeout_ms:5000}')")
