@@ -53,7 +53,7 @@ env "${schema_env[@]}" "$schema_herdr" plugin link "$repo_root" --enabled >"$tmp
 "$jq_bin" -e '
   .result.plugin
   | .plugin_id == "ludoroo.forestr"
-    and .version == "0.2.0"
+    and .version == "0.2.1"
     and .platforms == ["linux", "macos"]
     and [.actions[].id] == ["open"]
     and [.actions[].contexts] == [["workspace"]]
@@ -90,7 +90,7 @@ with open(f"{root}/herdr-plugin.toml", "rb") as file:
     manifest = tomllib.load(file)
 assert manifest["id"] == "ludoroo.forestr"
 assert manifest["name"] == "Forestr"
-assert manifest["version"] == "0.2.0"
+assert manifest["version"] == "0.2.1"
 with open(f"{root}/README.md", encoding="utf-8") as file:
     readme = file.read()
 assert f'- Version: `{manifest["version"]}`' in readme

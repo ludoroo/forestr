@@ -4,7 +4,7 @@ A [Herdr](https://herdr.dev/) plugin that manages Git branch worktrees from one 
 
 - Plugin ID: `ludoroo.forestr`
 - Action: `ludoroo.forestr.open`
-- Version: `0.2.0`
+- Version: `0.2.1`
 - Platforms: Linux, macOS
 
 ![Forestr modal listing worktrees across repositories with a commit-log preview](media/modal.png)
