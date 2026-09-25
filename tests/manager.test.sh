@@ -51,11 +51,17 @@ stop_test_producers() {
 }
 cleanup_test() {
     set +e
+    : >"$tmp/remove-release"
     stop_test_producers
     rm -rf "$tmp"
 }
 trap cleanup_test EXIT
-trap '[[ $- != *e* ]] || printf "manager test failed at line %s: %s\n" "$LINENO" "$BASH_COMMAND" >&2' ERR
+report_test_error() {
+    local status=$1 line=$2 command=$3
+    [[ $- != *e* ]] || printf 'manager test failed at line %s: %s\n' "$line" "$command" >&2
+    return "$status"
+}
+trap 'report_test_error "$?" "$LINENO" "$BASH_COMMAND"' ERR
 
 export GIT_CONFIG_COUNT=1
 export GIT_CONFIG_KEY_0=core.fsmonitor
@@ -194,13 +200,22 @@ if [[ " $* " == *' remove '* ]]; then
     [[ -z ${TEST_WT_REMOVE_CWD_FILE:-} ]] || pwd -P >"$TEST_WT_REMOVE_CWD_FILE"
     [[ -z ${TEST_WT_UMASK_FILE:-} ]] || umask >"$TEST_WT_UMASK_FILE"
     [[ -z ${TEST_WT_REMOVE_STARTED:-} ]] || : >"$TEST_WT_REMOVE_STARTED"
+    if [[ -n ${TEST_WT_REMOVE_RELEASE:-} ]]; then
+        release_parent=${TEST_WT_REMOVE_RELEASE%/*}
+        for _ in {1..3000}; do
+            [[ -e $TEST_WT_REMOVE_RELEASE ]] && break
+            [[ -d $release_parent ]] || exit 1
+            sleep 0.01
+        done
+        [[ -e $TEST_WT_REMOVE_RELEASE ]] || exit 1
+    fi
     [[ -z ${TEST_WT_REMOVE_DELAY:-} ]] || sleep "$TEST_WT_REMOVE_DELAY"
     if [[ ${TEST_WT_REMOVE_FAIL_AFTER_MUTATE:-false} == true ]]; then
         "$TEST_REAL_GIT" -C "$repo" worktree remove --force "$TEST_WT_REMOVE_PATH"
         printf 'interrupted after metadata removal\n' >&2
         exit 1
     fi
-    [[ ${TEST_WT_REMOVE_FAIL:-false} != true ]]
+    if [[ ${TEST_WT_REMOVE_FAIL:-false} == true ]]; then exit 1; fi
     [[ ${TEST_WT_REMOVE_PROGRESS:-false} != true ]] || printf 'Removing worktree files...\n' >&2
     target=${@: -1}
     if [[ ${TEST_WT_REMOVE_MUTATE:-false} == true ]]; then
@@ -673,6 +688,35 @@ printf 'manage\n' >"$preview_state/mode"
 [[ $(bash "$plugin_root/manager.sh" __preview-toggle "$preview_state") == show-preview ]]
 [[ $(cat "$preview_state/preview") == true ]]
 
+# Snapshot merging preserves existing order, replaces existing identities with
+# their last update, and appends new identities in first-seen order.
+merge_snapshot="$tmp/merge-snapshot"
+merge_additions="$tmp/merge-additions"
+printf '\t\tignored header\nold-a\tid-a\told A\nold-b\tid-b\told B\n' >"$merge_snapshot"
+printf '%s\n' \
+    $'new-a-first\tid-a\tnew A first' \
+    $'new-c-first\tid-c\tnew C first' \
+    $'ignored\t\tmissing identity' \
+    $'new-a-last\tid-a\tnew A last' \
+    $'new-c-last\tid-c\tnew C last' \
+    $'new-d\tid-d\tnew D' >"$merge_additions"
+bash "$plugin_root/manager.sh" __merge-snapshot "$merge_snapshot" "$merge_additions"
+tail -n +2 "$merge_snapshot" >"$tmp/merge-actual"
+printf '%s\n' \
+    $'new-a-last\tid-a\tnew A last' \
+    $'old-b\tid-b\told B' \
+    $'new-c-first\tid-c\tnew C first' \
+    $'new-d\tid-d\tnew D' >"$tmp/merge-expected"
+diff -u "$tmp/merge-expected" "$tmp/merge-actual"
+cp "$merge_snapshot" "$tmp/merge-before-empty"
+: >"$merge_additions"
+bash "$plugin_root/manager.sh" __merge-snapshot "$merge_snapshot" "$merge_additions"
+diff -u "$tmp/merge-before-empty" "$merge_snapshot"
+missing_snapshot="$tmp/missing-merge-snapshot"
+printf '%s\n' $'new-only\tid-only\tnew only' >"$merge_additions"
+bash "$plugin_root/manager.sh" __merge-snapshot "$missing_snapshot" "$merge_additions"
+[[ $(tail -n +2 "$missing_snapshot") == $'new-only\tid-only\tnew only' ]]
+
 # Layering is observable at the current-mode snapshot seam: all open Herdr
 # checkouts arrive before delayed Git, Git adds the non-open detached worktree,
 # then schema-2 Worktrunk facts replace the same canonical identities.
@@ -1090,8 +1134,8 @@ queue_payload=$("$jq_bin" -cn --arg root "$repo_b" --arg path "$queue_git_path" 
     | base64 | tr -d '\n')
 queue_state="$tmp/queue-state"; new_state "$queue_state"; printf '0\n' >"$queue_state/generation"
 test_umask=$(umask)
-export TEST_WT_REMOVE_DELAY=1 TEST_WT_REMOVE_STARTED="$tmp/remove-started" TEST_WT_REMOVE_PROGRESS=true \
-    TEST_WT_REMOVE_CWD_FILE="$tmp/remove-cwd" TEST_WT_UMASK_FILE="$tmp/remove-umask" \
+export TEST_WT_REMOVE_STARTED="$tmp/remove-started" TEST_WT_REMOVE_RELEASE="$tmp/remove-release" \
+    TEST_WT_REMOVE_PROGRESS=true TEST_WT_REMOVE_CWD_FILE="$tmp/remove-cwd" TEST_WT_UMASK_FILE="$tmp/remove-umask" \
     TEST_WT_REMOVE_MUTATE=true TEST_WT_REMOVE_PATH="$queue_git_path" \
     TEST_EXTRA_WORKSPACE_PATH="$queue_path" TEST_EXTRA_WORKSPACE_ID=wq MANAGER_BACKGROUND_NOTIFY=false
 : >"$TEST_CAPTURE"
@@ -1114,6 +1158,7 @@ if bash "$plugin_root/manager.sh" __queue-remove "$queue_state" "$queue_payload"
     printf 'duplicate active removal was accepted\n' >&2; exit 1
 fi
 grep -Fq 'already active' "$queue_state/error"
+: >"$TEST_WT_REMOVE_RELEASE"
 rm -rf "$queue_state" # detaching the popup must not cancel approved work
 for _ in {1..300}; do
     case $("$jq_bin" -r .status "$job_dir/record.json" 2>/dev/null || true) in succeeded|warning|failed) break ;; esac
@@ -1135,8 +1180,8 @@ later_state="$tmp/later-state"; new_state "$later_state"
 bash "$plugin_root/manager.sh" __footer "$later_state" >"$tmp/idle-after-removal-footer"
 ! grep -Fq 'queue-remove' "$tmp/idle-after-removal-footer"
 [[ ! -s $later_state/action-warning && ! -s $later_state/error ]]
-unset TEST_WT_REMOVE_DELAY TEST_WT_REMOVE_STARTED TEST_WT_REMOVE_PROGRESS TEST_WT_REMOVE_CWD_FILE TEST_WT_UMASK_FILE TEST_WT_REMOVE_MUTATE \
-    TEST_WT_REMOVE_PATH TEST_EXTRA_WORKSPACE_PATH TEST_EXTRA_WORKSPACE_ID MANAGER_BACKGROUND_NOTIFY
+unset TEST_WT_REMOVE_STARTED TEST_WT_REMOVE_RELEASE TEST_WT_REMOVE_PROGRESS TEST_WT_REMOVE_CWD_FILE TEST_WT_UMASK_FILE \
+    TEST_WT_REMOVE_MUTATE TEST_WT_REMOVE_PATH TEST_EXTRA_WORKSPACE_PATH TEST_EXTRA_WORKSPACE_ID MANAGER_BACKGROUND_NOTIFY
 
 # While the popup is still open, the result lands in its footer instead of a
 # Herdr notification, and the next refresh clears it like any other message.
@@ -1163,6 +1208,7 @@ bash "$plugin_root/manager.sh" __refresh "$open_state"
 bash "$plugin_root/manager.sh" __footer "$open_state" >"$tmp/refreshed-footer"
 ! grep -Fq 'open-remove' "$tmp/refreshed-footer"
 kill "$fake_sock_pid" 2>/dev/null || true
+wait "$fake_sock_pid" 2>/dev/null || true
 unset TEST_WT_REMOVE_MUTATE TEST_WT_REMOVE_PATH MANAGER_BACKGROUND_NOTIFY
 
 # Reopen reconciliation uses the exact PID/start token and authoritative Git

@@ -1,40 +1,75 @@
 #!/usr/bin/env bash
 
-if (( BASH_VERSINFO[0] < 4 )); then
-    printf 'Forestr requires Bash 4 or newer (associative arrays are used).\n' >&2
+if (( BASH_VERSINFO[0] < 3 || (BASH_VERSINFO[0] == 3 && BASH_VERSINFO[1] < 2) )); then
+    printf 'Forestr requires Bash 3.2 or newer.\n' >&2
     return 2 2>/dev/null || exit 2
 fi
 
 # Plugin configuration is immutable for one command invocation. Parse it once
-# into data (never shell source/eval it), while preserving TOML's last-key-wins
-# behavior used by the previous reader.
-declare -gA FORESTR_CONFIG_VALUES=()
-declare -g FORESTR_CONFIG_LOADED_PATH=
+# into parallel indexed arrays (supported by Bash 3.2), without sourcing/eval,
+# while preserving TOML's last-key-wins behavior.
+FORESTR_CONFIG_KEYS=()
+FORESTR_CONFIG_VALUES=()
+FORESTR_CONFIG_LOADED_PATH=
+FORESTR_CONFIG_VALUE=
 
 forestr_reset_config_cache() {
+    FORESTR_CONFIG_KEYS=()
     FORESTR_CONFIG_VALUES=()
     FORESTR_CONFIG_LOADED_PATH=
+    FORESTR_CONFIG_VALUE=
 }
 
 forestr_load_config() {
-    local config_file line key quoted bare
+    local config_file line key quoted bare value index found
     config_file=${HERDR_PLUGIN_CONFIG_DIR:-}/config.toml
     [[ $FORESTR_CONFIG_LOADED_PATH == "$config_file" ]] && return 0
+    FORESTR_CONFIG_KEYS=()
     FORESTR_CONFIG_VALUES=()
     FORESTR_CONFIG_LOADED_PATH=$config_file
     [[ -f $config_file ]] || return 0
     while IFS=$'\t' read -r key quoted bare; do
         [[ -n $key ]] || continue
-        FORESTR_CONFIG_VALUES["$key"]=${quoted:-$bare}
+        value=${quoted:-$bare}
+        found=false
+        for ((index=0; index<${#FORESTR_CONFIG_KEYS[@]}; index++)); do
+            if [[ ${FORESTR_CONFIG_KEYS[$index]} == "$key" ]]; then
+                FORESTR_CONFIG_VALUES[$index]=$value
+                found=true
+                break
+            fi
+        done
+        if ! $found; then
+            index=${#FORESTR_CONFIG_KEYS[@]}
+            FORESTR_CONFIG_KEYS[$index]=$key
+            FORESTR_CONFIG_VALUES[$index]=$value
+        fi
     done < <(sed -nE \
         's/^[[:space:]]*([[:alnum:]_]+)[[:space:]]*=[[:space:]]*("([^"]*)"|([^[:space:]#"]+))[[:space:]]*(#.*)?$/\1\t\3\t\4/p' \
         "$config_file")
 }
 
-forestr_config_value() {
-    local key=$1
+forestr_find_config_value() {
+    local key=$1 index
     forestr_load_config
-    printf '%s\n' "${FORESTR_CONFIG_VALUES[$key]:-}"
+    FORESTR_CONFIG_VALUE=
+    for ((index=0; index<${#FORESTR_CONFIG_KEYS[@]}; index++)); do
+        if [[ ${FORESTR_CONFIG_KEYS[$index]} == "$key" ]]; then
+            FORESTR_CONFIG_VALUE=${FORESTR_CONFIG_VALUES[$index]}
+            return 0
+        fi
+    done
+}
+
+forestr_config_value() {
+    forestr_find_config_value "$1"
+    printf '%s\n' "$FORESTR_CONFIG_VALUE"
+}
+
+forestr_config_assign() {
+    local destination=$1 key=$2 default=$3
+    forestr_find_config_value "$key"
+    printf -v "$destination" '%s' "${FORESTR_CONFIG_VALUE:-$default}"
 }
 
 forestr_find_executable() {

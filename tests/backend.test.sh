@@ -48,20 +48,21 @@ fi
 grep -Fq 'backend "worktrunk" requires wt' "$tmp/error"
 
 write_config auto
-find_executable_definition=$(declare -f forestr_find_executable)
-forestr_find_executable() { return 1; }
-backend_resolve
-[[ $FORESTR_BACKEND == git && -z $FORESTR_WORKTRUNK_BIN ]]
-"$JQ_BIN" -e '.backend == "git" and .operations.open and (.operations.enrich|not)
-  and .dependencies == {wt:false}' <<<"$(backend_capabilities)" >/dev/null
-eval "$find_executable_definition"
+(
+    forestr_find_executable() { return 1; }
+    backend_resolve
+    [[ $FORESTR_BACKEND == git && -z $FORESTR_WORKTRUNK_BIN ]]
+    "$JQ_BIN" -e '.backend == "git" and .operations.open and (.operations.enrich|not)
+      and .dependencies == {wt:false}' <<<"$(backend_capabilities)" >/dev/null
+)
 
 # Explicit Git does not even ask executable resolution for wt.
 write_config git
-forestr_find_executable() { printf 'unexpected executable lookup: %s\n' "$1" >&2; return 99; }
-backend_resolve "$tmp/missing-wt"
-[[ $FORESTR_BACKEND == git && -z $FORESTR_WORKTRUNK_BIN ]]
-eval "$find_executable_definition"
+(
+    forestr_find_executable() { printf 'unexpected executable lookup: %s\n' "$1" >&2; return 99; }
+    backend_resolve "$tmp/missing-wt"
+    [[ $FORESTR_BACKEND == git && -z $FORESTR_WORKTRUNK_BIN ]]
+)
 
 # Results crossing the adapter boundary are schema checked.
 FORESTR_BACKEND=malformed

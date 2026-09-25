@@ -65,7 +65,7 @@ Herdr does not install plugin dependencies; make sure these are on your `PATH` (
 | Dependency | Notes |
 | --- | --- |
 | Herdr `>= 0.9.0` | |
-| Bash `>= 4` | |
+| Bash `>= 3.2` | macOS's native `/bin/bash` is supported |
 | Git, `jq`, `curl` | |
 | `fzf` `>= 0.74` | |
 | Worktrunk (`wt`) | *optional* — enables the Worktrunk backend |
@@ -75,10 +75,10 @@ Removal workers are detached with `setsid` (part of util-linux on Linux) or the 
 On macOS:
 
 ```bash
-brew install bash jq fzf
+brew install jq fzf
 ```
 
-Forestr searches `PATH` plus common Homebrew prefixes. Explicit `BASH_BIN`, `HERDR_BIN`, `FZF_BIN`, `GIT_BIN`, `JQ_BIN`, `CURL_BIN`, and `WORKTRUNK_BIN` overrides are honoured.
+Forestr prefers a supported Bash from `PATH`, with the system and common Homebrew paths as fallbacks. macOS's native `/bin/bash` works without any additional installation, while a newer Bash generally provides faster startup and worker execution when already available. Explicit `BASH_BIN`, `HERDR_BIN`, `FZF_BIN`, `GIT_BIN`, `JQ_BIN`, `CURL_BIN`, and `WORKTRUNK_BIN` overrides are honoured. An explicit Bash override must be Bash 3.2 or newer; an invalid override fails rather than silently selecting another interpreter.
 
 ## Remove
 

@@ -193,7 +193,8 @@ removal_workspace_record_for_path() {
 }
 
 removal_workspace_id_for_path() {
-    local wanted=$1 selected_path=${2:-$wanted} workspace_json record candidate_path candidate_id candidate_canonical
+    local wanted=$1 selected_path workspace_json record candidate_path candidate_id candidate_canonical
+    selected_path=${2:-$wanted}
     workspace_json=$("$herdr" workspace list 2>/dev/null) || return 2
     while IFS= read -r record; do
         [[ -n $record ]] || continue
@@ -211,7 +212,8 @@ removal_workspace_id_for_path() {
 }
 
 removal_close_workspace_for_path() {
-    local repo_root=$1 path=$2 expected_id=${3:-} selected_path=${4:-$path} current_id topology workspace_status=0
+    local repo_root=$1 path=$2 expected_id=${3:-} selected_path current_id topology workspace_status=0
+    selected_path=${4:-$path}
     topology=$(removal_registration_state "$repo_root" "$path")
     [[ $topology == absent ]] || return 1
     current_id=$(removal_workspace_id_for_path "$path" "$selected_path") || workspace_status=$?

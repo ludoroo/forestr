@@ -42,6 +42,18 @@ printf 'create_scope = "remote"\n' >>"$tmp/config/config.toml"
 forestr_reset_config_cache
 [[ $(forestr_create_scope config) == remote ]]
 
+# Indexed config storage preserves last-key-wins (including an empty final
+# value) and treats shell-looking text as inert data.
+printf '%s\n' 'duplicate_value = "first"' 'duplicate_value = "second"' \
+    'empty_value = "present"' 'empty_value = ""' >>"$tmp/config/config.toml"
+printf 'literal_value = "$(touch %s)"\n' "$tmp/config-was-executed" >>"$tmp/config/config.toml"
+forestr_reset_config_cache
+[[ $(forestr_config_value duplicate_value) == second ]]
+[[ -z $(forestr_config_value empty_value) ]]
+expected_literal="\$(touch $tmp/config-was-executed)"
+[[ $(forestr_config_value literal_value) == "$expected_literal" ]]
+[[ ! -e $tmp/config-was-executed ]]
+
 # Enrichment controls are bounded and reject malformed values.
 [[ $(forestr_config_bool enrich_backend true) == true ]]
 [[ $(forestr_config_positive_integer worktrunk_enrichment_collection_timeout_ms 5000) == 5000 ]]

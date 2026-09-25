@@ -360,7 +360,7 @@ backend_git_remove() {
     fi
     [[ $force != true ]] || command_force=(--force)
     error_file=$(mktemp "${TMPDIR:-/tmp}/forestr-git-remove.XXXXXX")
-    if ! "${FORESTR_GIT_BIN:-git}" -C "$command_repo" worktree remove "${command_force[@]}" "$BG_WORKTREE_PATH" 2>"$error_file"; then
+    if ! "${FORESTR_GIT_BIN:-git}" -C "$command_repo" worktree remove ${command_force[@]+"${command_force[@]}"} "$BG_WORKTREE_PATH" 2>"$error_file"; then
         detail=$(sed -n '1{s/^fatal: //;p;}' "$error_file"); rm -f "$error_file"
         backend_git_failure remove "Git refused to remove $BG_WORKTREE_PATH${detail:+: $detail}."
         return

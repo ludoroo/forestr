@@ -2,8 +2,8 @@
 
 set -euo pipefail
 
-if (( BASH_VERSINFO[0] < 4 )); then
-    printf 'Forestr requires Bash 4 or newer (associative arrays are used).\n' >&2
+if (( BASH_VERSINFO[0] < 3 || (BASH_VERSINFO[0] == 3 && BASH_VERSINFO[1] < 2) )); then
+    printf 'Forestr requires Bash 3.2 or newer.\n' >&2
     exit 2
 fi
 
@@ -35,8 +35,10 @@ export JQ_BIN=$jq_bin
 export FORESTR_GIT_BIN=$git_bin
 curl_bin=$(require_executable curl "${CURL_BIN:-}")
 bash_bin=$(require_executable bash "${FORESTR_BASH_BIN:-${BASH:-}}")
-if ! "$bash_bin" -c '(( BASH_VERSINFO[0] >= 4 ))' 2>/dev/null; then
-    printf 'Forestr requires Bash 4 or newer (FORESTR_BASH_BIN=%s).\n' "$bash_bin" >&2
+if [[ $("$bash_bin" -c \
+    '(( BASH_VERSINFO[0] > 3 || (BASH_VERSINFO[0] == 3 && BASH_VERSINFO[1] >= 2) )) && printf supported' \
+    2>/dev/null || true) != supported ]]; then
+    printf 'Forestr requires Bash 3.2 or newer (FORESTR_BASH_BIN=%s).\n' "$bash_bin" >&2
     exit 2
 fi
 printf -v bash_q '%q' "$bash_bin"
@@ -71,29 +73,29 @@ enrichment_collection_timeout_ms=$FORESTR_BACKEND_ENRICHMENT_COLLECTION_TIMEOUT_
 enrichment_concurrency=$FORESTR_BACKEND_ENRICHMENT_CONCURRENCY
 
 forestr_load_config
-status_icon_staged=${FORESTR_CONFIG_VALUES[status_icon_staged]:-+}
-status_icon_modified=${FORESTR_CONFIG_VALUES[status_icon_modified]:-!}
-status_icon_untracked=${FORESTR_CONFIG_VALUES[status_icon_untracked]:-?}
-status_icon_unresolved=${FORESTR_CONFIG_VALUES[status_icon_unresolved]:-·}
-status_icon_conflicted=${FORESTR_CONFIG_VALUES[status_icon_conflicted]:-✘}
-status_icon_operation=${FORESTR_CONFIG_VALUES[status_icon_operation]:-↻}
-status_icon_prunable=${FORESTR_CONFIG_VALUES[status_icon_prunable]:-⊟}
-status_icon_locked=${FORESTR_CONFIG_VALUES[status_icon_locked]:-⊞}
-status_icon_detached=${FORESTR_CONFIG_VALUES[status_icon_detached]:-⊘}
-status_icon_warning=${FORESTR_CONFIG_VALUES[status_icon_warning]:-⚑}
-status_icon_main=${FORESTR_CONFIG_VALUES[status_icon_main]:-^}
-status_icon_orphan=${FORESTR_CONFIG_VALUES[status_icon_orphan]:-∅}
-status_icon_empty=${FORESTR_CONFIG_VALUES[status_icon_empty]:-_}
-status_icon_integrated=${FORESTR_CONFIG_VALUES[status_icon_integrated]:-⊂}
-status_icon_would_conflict=${FORESTR_CONFIG_VALUES[status_icon_would_conflict]:-✗}
-status_icon_same_commit=${FORESTR_CONFIG_VALUES[status_icon_same_commit]:-–}
-status_icon_diverged=${FORESTR_CONFIG_VALUES[status_icon_diverged]:-↕}
-status_icon_ahead=${FORESTR_CONFIG_VALUES[status_icon_ahead]:-↑}
-status_icon_behind=${FORESTR_CONFIG_VALUES[status_icon_behind]:-↓}
-status_icon_remote_synced=${FORESTR_CONFIG_VALUES[status_icon_remote_synced]:-|}
-status_icon_remote_ahead=${FORESTR_CONFIG_VALUES[status_icon_remote_ahead]:-⇡}
-status_icon_remote_behind=${FORESTR_CONFIG_VALUES[status_icon_remote_behind]:-⇣}
-status_icon_remote_diverged=${FORESTR_CONFIG_VALUES[status_icon_remote_diverged]:-⇅}
+forestr_config_assign status_icon_staged status_icon_staged '+'
+forestr_config_assign status_icon_modified status_icon_modified '!'
+forestr_config_assign status_icon_untracked status_icon_untracked '?'
+forestr_config_assign status_icon_unresolved status_icon_unresolved '·'
+forestr_config_assign status_icon_conflicted status_icon_conflicted '✘'
+forestr_config_assign status_icon_operation status_icon_operation '↻'
+forestr_config_assign status_icon_prunable status_icon_prunable '⊟'
+forestr_config_assign status_icon_locked status_icon_locked '⊞'
+forestr_config_assign status_icon_detached status_icon_detached '⊘'
+forestr_config_assign status_icon_warning status_icon_warning '⚑'
+forestr_config_assign status_icon_main status_icon_main '^'
+forestr_config_assign status_icon_orphan status_icon_orphan '∅'
+forestr_config_assign status_icon_empty status_icon_empty '_'
+forestr_config_assign status_icon_integrated status_icon_integrated '⊂'
+forestr_config_assign status_icon_would_conflict status_icon_would_conflict '✗'
+forestr_config_assign status_icon_same_commit status_icon_same_commit '–'
+forestr_config_assign status_icon_diverged status_icon_diverged '↕'
+forestr_config_assign status_icon_ahead status_icon_ahead '↑'
+forestr_config_assign status_icon_behind status_icon_behind '↓'
+forestr_config_assign status_icon_remote_synced status_icon_remote_synced '|'
+forestr_config_assign status_icon_remote_ahead status_icon_remote_ahead '⇡'
+forestr_config_assign status_icon_remote_behind status_icon_remote_behind '⇣'
+forestr_config_assign status_icon_remote_diverged status_icon_remote_diverged '⇅'
 status_icons_json=$($jq_bin -cn \
     --arg staged "$status_icon_staged" --arg modified "$status_icon_modified" --arg untracked "$status_icon_untracked" \
     --arg unresolved "$status_icon_unresolved" --arg conflicted "$status_icon_conflicted" --arg operation "$status_icon_operation" \
@@ -203,11 +205,11 @@ repository_records() {
         canonical_key=$(canonical_directory "$repo_key" || printf '%s\n' "$repo_key")
         [[ -n $canonical_root ]] || continue
         existing=false
-        for repo_root in "${seen_roots[@]}"; do
+        for repo_root in ${seen_roots[@]+"${seen_roots[@]}"}; do
             [[ $repo_root != "$canonical_root" ]] || { existing=true; break; }
         done
         if ! $existing; then
-            for repo_key in "${seen_keys[@]}"; do
+            for repo_key in ${seen_keys[@]+"${seen_keys[@]}"}; do
                 [[ $repo_key != "$canonical_key" ]] || { existing=true; break; }
             done
         fi
@@ -445,27 +447,42 @@ herdr_seed_rows() {
 }
 
 merge_snapshot_rows() {
-    local snapshot=$1 additions=$2 temporary="$snapshot.new" payload identity display
-    local -A replacements=() emitted=()
-    while IFS=$'\t' read -r payload identity display; do
-        [[ -n $identity ]] || continue
-        replacements["$identity"]="$payload"$'\t'"$identity"$'\t'"$display"
-    done <"$additions"
+    local snapshot=$1 additions=$2
+    local temporary="$snapshot.new" existing=$snapshot
+    [[ -f $existing ]] || existing=/dev/null
     header_row >"$temporary"
-    if [[ -f $snapshot ]]; then
-        while IFS=$'\t' read -r payload identity display; do
-            [[ -n $identity ]] || continue
-            if [[ -n ${replacements[$identity]+x} ]]; then
-                printf '%s\n' "${replacements[$identity]}" >>"$temporary"; emitted["$identity"]=1
-            else
-                printf '%s\t%s\t%s\n' "$payload" "$identity" "$display" >>"$temporary"
-            fi
-        done <"$snapshot"
-    fi
-    while IFS=$'\t' read -r payload identity display; do
-        [[ -n $identity && -z ${emitted[$identity]+x} ]] || continue
-        printf '%s\t%s\t%s\n' "$payload" "$identity" "$display" >>"$temporary"; emitted["$identity"]=1
-    done <"$additions"
+    # awk's POSIX associative arrays replace Bash 4 maps without changing row
+    # order: existing identities stay in place, while new identities append in
+    # their first-seen order. The last replacement for an existing identity wins.
+    awk -F '\t' '
+        FILENAME == ARGV[1] {
+            identity = $2
+            if (identity == "") next
+            replacements[identity] = $0
+            if (!(identity in addition_seen)) {
+                addition_seen[identity] = 1
+                addition_order[++addition_count] = identity
+                addition_first[identity] = $0
+            }
+            next
+        }
+        {
+            identity = $2
+            if (identity == "") next
+            if (identity in replacements) {
+                print replacements[identity]
+                emitted[identity] = 1
+            } else {
+                print $0
+            }
+        }
+        END {
+            for (order_index = 1; order_index <= addition_count; order_index++) {
+                identity = addition_order[order_index]
+                if (!(identity in emitted)) print addition_first[identity]
+            }
+        }
+    ' "$additions" "$existing" >>"$temporary"
     mv "$temporary" "$snapshot"
 }
 
@@ -710,7 +727,8 @@ render_footer() {
 }
 
 screen_rows() {
-    local state_dir=$1 generation=${2:-$(current_generation "$state_dir")} mode
+    local state_dir=$1 generation mode
+    generation=${2:-$(current_generation "$state_dir")}
     mode=$(cat "$state_dir/mode" 2>/dev/null || printf manage)
     case $mode in
         repository) repository_rows "$state_dir" ;;
@@ -736,7 +754,8 @@ background_rows() {
 }
 
 notify_manage_snapshot() {
-    local state_dir=$1 generation=$2 socket="$state_dir/fzf.sock" action manager_q state_q
+    local state_dir=$1 generation=$2 socket action manager_q state_q
+    socket="$state_dir/fzf.sock"
     [[ ${MANAGER_BACKGROUND_NOTIFY:-true} == true ]] || return 0
     [[ $(current_generation "$state_dir") == "$generation" ]] || return 0
     [[ $(cat "$state_dir/mode" 2>/dev/null || printf manage) == manage ]] || return 0
@@ -748,9 +767,9 @@ notify_manage_snapshot() {
 }
 
 enriched_rows_for_repository() {
-    local snapshot=$1 record=$2 result=$3 repository repo_key item encoded backend_path canonical_path
+    local snapshot=$1 record=$2 result=$3 repository repo_key item encoded backend_path canonical_path index
     local payload identity display row current_path merged marker repo_name label state head path
-    local -A by_path=()
+    local -a backend_paths=() backend_items=()
     repository=$("$jq_bin" -Rnr --arg r "$record" '$r|@base64d|fromjson')
     repo_key=$("$jq_bin" -r '.repo_key' <<<"$repository")
     while IFS= read -r encoded; do
@@ -759,7 +778,9 @@ enriched_rows_for_repository() {
         backend_path=$("$jq_bin" -r '.path // empty' <<<"$item")
         canonical_path=$(canonical_directory "$backend_path" || printf '%s\n' "$backend_path")
         [[ -n $canonical_path ]] || continue
-        by_path["$canonical_path"]=$encoded
+        index=${#backend_paths[@]}
+        backend_paths[$index]=$canonical_path
+        backend_items[$index]=$encoded
     done < <("$jq_bin" -r '.items[]? | select(.path != null) | tojson | @base64' "$result")
 
     while IFS=$'\t' read -r payload identity display; do
@@ -767,7 +788,12 @@ enriched_rows_for_repository() {
         row=$(decode_row "$payload") || continue
         [[ $("$jq_bin" -r '.repo_key' <<<"$row") == "$repo_key" ]] || continue
         current_path=$("$jq_bin" -r '.canonical_path // .path' <<<"$row")
-        encoded=${by_path[$current_path]:-}; [[ -n $encoded ]] || continue
+        encoded=
+        for ((index=0; index<${#backend_paths[@]}; index++)); do
+            [[ ${backend_paths[$index]} == "$current_path" ]] || continue
+            encoded=${backend_items[$index]}
+        done
+        [[ -n $encoded ]] || continue
         item=$("$jq_bin" -Rnr --arg i "$encoded" '$i|@base64d|fromjson')
         state=$(render_worktrunk_status "$item")
         merged=$("$jq_bin" -cn --argjson row "$row" --argjson backend_item "$item" --arg backend_state "$state" '
@@ -1176,6 +1202,9 @@ capture_action() {
 # Worker entrypoints are used by fzf reload/transform actions. They never open
 # another popup; the parent invocation owns the one persistent fzf process.
 case ${1:-} in
+    __merge-snapshot)
+        merge_snapshot_rows "$2" "$3"; exit 0
+        ;;
     __produce)
         status=0
         produce_manage_layers "$2" "$3" || status=$?

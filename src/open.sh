@@ -57,7 +57,7 @@ exec "$herdr" plugin pane open \
     --placement popup \
     --width "$width" \
     --height "$height" \
-    "${backend_env[@]}" \
+    ${backend_env[@]+"${backend_env[@]}"} \
     --env "FORESTR_BASH_BIN=${FORESTR_BASH_BIN:-${BASH:-bash}}" \
     --env "FZF_BIN=$fzf_bin" \
     --env "GIT_BIN=$git_bin" \
