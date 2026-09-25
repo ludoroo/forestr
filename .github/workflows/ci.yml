@@ -2,7 +2,13 @@ name: CI
 
 on:
   push:
+    # Release tags point to commits already checked on main; do not run twice.
+    branches: [main]
   pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
